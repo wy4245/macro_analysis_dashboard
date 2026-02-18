@@ -1,0 +1,13 @@
+pandas
+numpy
+openpyxl
+requests
+python-dotenv
+sqlalchemy
+xlsxwriter
+selenium
+webdriver-manager
+curl_cffi
+lxml
+streamlit
+plotly

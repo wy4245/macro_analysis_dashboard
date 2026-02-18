@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmd.exe /c rename \"C:\\\\Users\\\\user\\\\Desktop\\\\카이스트 MFE\\\\시황분석\\\\Macro Automation Tool\" \"MAT\")",
+      "Bash(cmd.exe /c \"dir \"\"C:\\\\Users\\\\user\\\\Desktop\\\\카이스트 MFE\\\\시황분석\"\"\")",
+      "Bash(powershell.exe -Command \"Rename-Item -Path ''C:\\\\Users\\\\user\\\\Desktop\\\\카이스트 MFE\\\\시황분석\\\\Macro Automation Tool'' -NewName ''MAT''\")",
+      "Bash(powershell.exe -Command \"Set-Location ''C:\\\\Users\\\\user\\\\Desktop\\\\카이스트 MFE\\\\시황분석''; Rename-Item -Path ''Macro Automation Tool'' -NewName ''MAT''\")",
+      "Bash(powershell.exe -Command \"Test-Path ''C:\\\\Users\\\\user\\\\Desktop\\\\카이스트 MFE\\\\시황분석\\\\MAT''\")",
+      "Bash(.venv/Scripts/python.exe:*)",
+      "WebSearch",
+      "Bash(.venv/Scripts/pip install:*)",
+      "Bash(.venv/Scripts/python:*)"
+    ]
+  }
+}
