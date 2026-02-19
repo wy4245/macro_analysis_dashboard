@@ -21,35 +21,6 @@ TARGET_DATE = date.today() - timedelta(days=1)
 st.set_page_config(page_title="MAT", layout="wide")
 st.title("Macro Analysis")
 
-# ─── 전역 CSS: HTML 테이블 스타일 (헤더 가운데 정렬 포함) ─────────────────────
-st.markdown("""
-<style>
-table.dataframe {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-}
-table.dataframe thead th {
-    text-align: center !important;
-    padding: 8px 14px;
-    border-bottom: 2px solid rgba(128,128,128,0.3);
-    white-space: nowrap;
-    font-weight: 600;
-}
-table.dataframe tbody th {
-    text-align: center !important;
-    padding: 6px 14px;
-    border-bottom: 1px solid rgba(128,128,128,0.1);
-    white-space: nowrap;
-}
-table.dataframe tbody td {
-    text-align: center !important;
-    padding: 6px 14px;
-    border-bottom: 1px solid rgba(128,128,128,0.1);
-}
-</style>
-""", unsafe_allow_html=True)
-
 TODAY     = TARGET_DATE
 TODAY_STR = TODAY.strftime("%Y-%m-%d")
 try:
@@ -110,7 +81,7 @@ elif _kofia_df is not None:
     _merged_df = _kofia_df
 
 
-# ─── 헬퍼 ────────────────────────────────────────────────────────────────────
+# ─── 헬퍼: 특정 날짜의 금리 커브 시리즈 추출 ─────────────────────────────────
 
 def _yield_curve_at(df: pd.DataFrame, country: str, ref_date) -> pd.Series:
     """ref_date 이하 가장 가까운 날짜의 해당 국가 금리 커브를 반환합니다."""
@@ -130,14 +101,6 @@ def _yield_curve_at(df: pd.DataFrame, country: str, ref_date) -> pd.Series:
         if c in row.index:
             result[t] = row[c]
     return result
-
-
-def _render_table(styler: pd.io.formats.style.Styler, scrollable: bool = False) -> None:
-    """pandas Styler를 HTML 테이블로 렌더링합니다 (헤더 가운데 정렬 보장)."""
-    html = styler.to_html(na_rep="-")
-    if scrollable:
-        html = f'<div style="overflow-x:auto; overflow-y:auto; max-height:520px;">{html}</div>'
-    st.markdown(html, unsafe_allow_html=True)
 
 
 # ─── 탭 목록 ─────────────────────────────────────────────────────────────────
@@ -191,7 +154,7 @@ with tab_analysis:
             bp_cols = [c for c in summary_df.columns if "금리" not in c[1]]
             styled = styled.map(_color_bp, subset=bp_cols)
             styled = styled.set_properties(**{'text-align': 'center'})
-            _render_table(styled)
+            st.dataframe(styled, use_container_width=True)
 
             st.divider()
 
@@ -275,7 +238,7 @@ with tab_analysis:
             }, na_rep="-")
             curve_styled = curve_styled.map(_color_curve_bp, subset=["1W(bp)", "1M(bp)"])
             curve_styled = curve_styled.set_properties(**{'text-align': 'center'})
-            _render_table(curve_styled)
+            st.dataframe(curve_styled, use_container_width=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -313,9 +276,11 @@ with tab_rawdata:
                 fig_m.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_m, use_container_width=True)
 
+            df_m_display = df_m.copy()
+            df_m_display.index = df_m_display.index.strftime("%Y-%m-%d")
             df_m_styled = (
-                df_m.style
+                df_m_display.style
                 .format("{:.3f}", na_rep="-")
                 .set_properties(**{'text-align': 'center'})
             )
-            _render_table(df_m_styled, scrollable=True)
+            st.dataframe(df_m_styled, use_container_width=True)
