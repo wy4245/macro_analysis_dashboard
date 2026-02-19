@@ -3,7 +3,6 @@ venv/
 __pycache__/
 *.pyc
 .DS_Store
-data/raw/
-*.xlsx
 *.xls
+data/raw/selenium_error_step.html
 .claude/

@@ -381,9 +381,13 @@ class GlobalTreasuryCollector:
 
 
 if __name__ == "__main__":
-    # 날짜 설정 (코드에서 직접 수정)
-    START_DATE = "2025-02-18"
-    END_DATE   = "2026-02-18"
+    from datetime import date, timedelta
+
+    # 자동 날짜: 전일 기준 1년치
+    _end   = date.today() - timedelta(days=1)
+    _start = _end - timedelta(days=365)
+    END_DATE   = _end.strftime("%Y-%m-%d")
+    START_DATE = _start.strftime("%Y-%m-%d")
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 글로벌 국채 금리 수집 시작")
     print(f"  기간: {START_DATE} ~ {END_DATE}")
@@ -392,7 +396,10 @@ if __name__ == "__main__":
     df = collector.collect(start_date=START_DATE, end_date=END_DATE)
 
     if df is not None:
-        print("\n[수집 완료]")
+        save_path = _root / "data" / "global_treasury.csv"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(save_path)
+        print(f"\n[수집 완료] → {save_path}")
         print(df.tail())
     else:
         print("[수집 실패]")

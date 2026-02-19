@@ -329,11 +329,17 @@ class KofiaBondCollector:
 
 
 if __name__ == "__main__":
+    from datetime import date, timedelta
+
+    # 자동 날짜: 전일
+    _target    = date.today() - timedelta(days=1)
+    target_str = _target.strftime("%Y%m%d")
+
     collector = KofiaBondCollector()
-    print("--- 1. Selenium (Headless) 실행 ---")
-    if collector.Treasury_Collector_Selenium(target_date="20260218", headless=True):
-        print("Selenium 성공: 파일이 data/raw에 저장되었습니다.")
-        df = collector.load_excel("20260218")
+    print(f"--- KOFIA Selenium (Headless) | 기준일: {target_str} ---")
+    if collector.Treasury_Collector_Selenium(target_date=target_str, headless=True):
+        print(f"Selenium 성공: data/raw/{target_str}/kofia_bond_yield.xlsx")
+        df = collector.load_excel(target_str)
         if df is not None:
             print(df.tail())
     else:
