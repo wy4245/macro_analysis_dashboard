@@ -21,6 +21,18 @@ TARGET_DATE = date.today() - timedelta(days=1)
 st.set_page_config(page_title="MAT", layout="wide")
 st.title("Macro Analysis")
 
+# ─── 전역 CSS: 모든 데이터프레임 헤더 가운데 정렬 ────────────────────────────
+st.markdown("""
+<style>
+[data-testid="stDataFrame"] th {
+    text-align: center !important;
+}
+[data-testid="stDataFrame"] thead tr th {
+    text-align: center !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 TODAY     = TARGET_DATE
 TODAY_STR = TODAY.strftime("%Y-%m-%d")
 try:
@@ -283,7 +295,10 @@ with tab_rawdata:
                 fig_m.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_m, use_container_width=True)
 
-            df_m_styled = df_m.style.set_properties(**{'text-align': 'center'}).set_table_styles([
-                dict(selector='th', props=[('text-align', 'center')]),
-            ])
+            df_m_styled = (
+                df_m.style
+                .format("{:.3f}")
+                .set_properties(**{'text-align': 'center'})
+                .set_table_styles([dict(selector='th', props=[('text-align', 'center')])])
+            )
             st.dataframe(df_m_styled, use_container_width=True)
