@@ -33,23 +33,44 @@ class KofiaBondCollector:
     
     def __init__(self, download_dir=None):
         self.url = "https://www.kofiabond.or.kr/index.html"
+        
+        # 기본 다운로드 경로 설정
         if download_dir is None:
-            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data", "raw"))
+            # 1. 로컬 개발 환경: 프로젝트 내 data/raw
+            local_path = os.path.abspath(os.path.join(os.getcwd(), "data", "raw"))
+            
+            # 2. 쓰기 권한 확인 (Streamlit Cloud 대응)
+            if os.access(os.getcwd(), os.W_OK):
+                self.download_dir = local_path
+            else:
+                # 쓰기 권한 없으면 임시 디렉토리 사용 (/tmp 등)
+                import tempfile
+                self.download_dir = os.path.join(tempfile.gettempdir(), "mat_kofia_data")
         else:
             self.download_dir = os.path.abspath(download_dir)
             
         if not os.path.exists(self.download_dir):
-            os.makedirs(self.download_dir)
+            try:
+                os.makedirs(self.download_dir, exist_ok=True)
+            except OSError:
+                # 권한 문제 등으로 실패 시 임시 디렉토리로 우회
+                import tempfile
+                self.download_dir = os.path.join(tempfile.gettempdir(), "mat_kofia_data")
+                os.makedirs(self.download_dir, exist_ok=True)
 
     def _get_selenium_options(self, headless=True, download_path=None):
         options = Options()
         if headless:
             options.add_argument("--headless")
             options.add_argument("--headless=new")
+        # Browser Options
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--window-size=1920,1080")
         options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        # Cloud/Server 환경에서 필수적인 옵션들 추가
+        options.add_argument("--remote-debugging-port=9222")
+        options.add_argument("--disable-blink-features=AutomationControlled")
         
         # 엑셀 다운로드 자동화 설정
         target_dir = download_path if download_path else self.download_dir
