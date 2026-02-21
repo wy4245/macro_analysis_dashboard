@@ -26,7 +26,7 @@ import pandas as pd
 from curl_cffi import requests as cffi_requests
 
 # standalone 실행 시 프로젝트 루트를 sys.path에 추가
-_root = Path(__file__).resolve().parents[2]
+_root = Path(__file__).resolve().parents[3]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 

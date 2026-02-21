@@ -24,8 +24,11 @@ pip install -r requirements.txt
 streamlit run main.py
 
 # Run individual collectors standalone (each has its own __main__ block for development)
-python modules/collector/kofia_bond.py
-python modules/collector/global_treasury_rate.py
+python modules/collector/kofia/treasury_summary.py
+python modules/collector/investing/global_treasury_rate.py
+
+# Collect data that cannot run on the server (investing.com) and push to git
+python collect_data.py
 
 # Debug KOFIA website frame structure (opens visible browser window)
 python modules/debug_frames.py
@@ -35,36 +38,50 @@ python modules/debug_frames.py
 
 ### Data Flow
 
+Two-tier collection strategy:
+
+| Source | 수집 방법 | 이유 |
+|--------|-----------|------|
+| investing.com (글로벌 국채) | 로컬에서 `collect_data.py` 실행 → git push | Cloudflare 우회 필요 (curl_cffi), 서버에서 차단됨 |
+| KOFIA (한국 국채) | Streamlit 앱 사이드바 버튼 → 서버에서 직접 수집 | Selenium + chromium, 서버에서 실행 가능 |
+
 - `main.py` is a Streamlit app (`streamlit run main.py`); UI controls drive data loading.
+- Sidebar **KOFIA 데이터 수집** button triggers Selenium scraping directly on the server.
+- `collect_data.py` only handles sources that cannot run on the server (currently investing.com).
 - During development, each collector can be run standalone via its `if __name__ == "__main__"` block.
 - Dates are hardcoded in each collector's `__main__` block (not passed via CLI).
-- KOFIA data is saved to disk (xlsx) then read back; yfinance data is fetched directly into memory and cached via `@st.cache_data(ttl=3600)`.
 
-### Adding a New Data Section
+### Adding a New Data Source
 
-1. Create `modules/collector/<name>.py` with a class exposing a method returning `pd.DataFrame | None`
-2. In `main.py`, add a new tab name to the `st.tabs([...])` list
-3. Add a `with tab_<name>:` block — follow the pattern of existing tabs
+1. Determine if the source can run on the server or requires local execution:
+   - **Server-runnable** (requests, Selenium with system chromium): Add a collection button to the `st.sidebar` in `main.py`
+   - **Local-only** (Cloudflare bypass, curl_cffi): Add to `collect_data.py`
+2. Create `modules/collector/<source_name>/<data_name>.py` with a class exposing a method returning `pd.DataFrame | None`
+3. In `main.py`, add a new tab name to the `st.tabs([...])` list and a `with tab_<name>:` block
 
 ### Module Structure
 
 ```
 modules/
   collector/
-    kofia_bond.py           # KofiaBondCollector — KOFIA domestic bond yields (Selenium)
-    global_treasury_rate.py # GlobalTreasuryCollector — global gov bond yields (yfinance)
-  debug_frames.py           # iframe inspection utility for KOFIA site
+    kofia/
+      treasury_summary.py     # KofiaBondCollector — KOFIA domestic bond yields (Selenium)
+    investing/
+      global_treasury_rate.py # GlobalTreasuryCollector — global gov bond yields (curl_cffi)
+  debug_frames.py             # iframe inspection utility for KOFIA site
+  utils.py                    # shared utilities (fill_calendar, standardize_kofia, etc.)
 ```
 
 ### Collectors
 
-**`KofiaBondCollector`** (`kofia_bond.py`)
+**`KofiaBondCollector`** (`modules/collector/kofia/treasury_summary.py`)
 - Selenium-based; navigates the KOFIA WebSquare site
 - `Treasury_Collector_Selenium(target_date, headless=True) -> bool` — downloads Korean Treasury yields (2, 3, 10, 20, 30yr) for a 1-year window ending at `target_date`; returns `True` on success
 - `load_excel(target_date) -> pd.DataFrame | None` — reads a previously downloaded file from disk
 - KOFIA `.xls` downloads are HTML tables: parse with `pd.read_html(flavor='lxml')`, fall back to `pd.read_excel()`
 - Downloaded filename: `최종호가 수익률.xls`; renamed/converted to `kofia_bond_yield.xlsx`
 - Output: `data/raw/YYYYMMDD/kofia_bond_yield.xlsx` (ascending date-sorted)
+- **Triggered from**: Streamlit sidebar button (runs on server)
 
 KOFIA iframe navigation sequence:
 ```
@@ -74,12 +91,13 @@ Menu IDs: `genLv1_0_imgLv1` → `genLv1_0_genLv2_0_txtLv2`; period tab: `tabCont
 
 Bond checkbox IDs — uncheck: `chkAnnItm_input_10/11/14/16`; check (KTB 2/3/10/20/30yr): `chkAnnItm_input_1/2/4/5/6`
 
-**`GlobalTreasuryCollector`** (`global_treasury_rate.py`)
+**`GlobalTreasuryCollector`** (`modules/collector/investing/global_treasury_rate.py`)
 - Uses `curl_cffi` (Cloudflare bypass) + investing.com scraping
 - Downloads US, DE, GB, JP, CN treasury yields; 29 maturities (US 20Y unavailable on investing.com)
 - Wide format, columns: `{CC}_{n}Y` (e.g. `US_10Y`, `DE_2Y`)
 - `collect(start_date, end_date) -> pd.DataFrame | None` — returns data directly (no disk write)
 - Data is trading-day only; NaN where a market is closed on a given date
+- **Triggered from**: `collect_data.py` (local execution only)
 
 investing.com 스크래핑 흐름:
 1. `curl_cffi.Session(impersonate="chrome120")` → Cloudflare 쿠키 획득
@@ -93,10 +111,11 @@ GB 슬러그: `uk-{n}-year-bond-yield` (u.k. 형식 아님); US 20Y 슬러그: `
 ### Output Structure
 
 ```
-data/raw/
-  YYYYMMDD/
-    kofia_bond_yield.xlsx    # KOFIA domestic bond yields (Selenium download → saved to disk)
-    # global treasury data lives only in memory (fetched fresh via yfinance)
+data/
+  global_treasury.csv          # 글로벌 국채 (investing.com) — collect_data.py → git push
+  raw/
+    YYYYMMDD/
+      kofia_bond_yield.xlsx    # KOFIA 국채 — Streamlit 버튼으로 서버에서 직접 수집
 ```
 
 ### Notes
