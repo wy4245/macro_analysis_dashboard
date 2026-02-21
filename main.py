@@ -32,31 +32,7 @@ COUNTRIES = ["KR", "US", "DE", "GB", "JP", "CN"]
 TENORS    = [2, 3, 5, 10, 20, 30]
 
 
-# ─── 사이드바: 데이터 수집 ─────────────────────────────────────────────────────
-with st.sidebar:
-    st.subheader("데이터 수집")
-    st.caption(f"기준일: {TODAY_STR}")
-
-    st.markdown("**KOFIA 국채 금리** (서버 직접 수집)")
-    if st.button("KOFIA 데이터 수집", key="kofia_collect"):
-        with st.spinner("KOFIA 국채 금리 수집 중... (약 1~2분 소요)"):
-            from modules.collector.kofia.treasury_summary import KofiaBondCollector
-            collector_k = KofiaBondCollector()
-            ok = collector_k.Treasury_Collector_Selenium(
-                target_date=TODAY.strftime("%Y%m%d"), headless=True
-            )
-        if ok:
-            st.success("KOFIA 수집 완료!")
-            st.rerun()
-        else:
-            st.error("KOFIA 수집 실패. 로그를 확인하세요.")
-
-    st.divider()
-    st.markdown("**글로벌 국채 금리** (investing.com)")
-    st.info("Cloudflare 우회 필요 — 로컬에서 `python collect_data.py` 실행 후 git push 해주세요.")
-
-
-# ─── 데이터 자동 로드 (캐시) ──────────────────────────────────────────────────
+# ─── 데이터 로드 ──────────────────────────────────────────────────────────────
 
 def _load_global() -> pd.DataFrame | None:
     """data/global_treasury.csv 에서 글로벌 국채 데이터를 로드합니다."""
@@ -73,7 +49,7 @@ def _load_global() -> pd.DataFrame | None:
 
 
 def _load_latest_kofia() -> pd.DataFrame | None:
-    """data/raw/*/kofia_bond_yield.xlsx 중 가장 최근 파일을 직접 로드합니다."""
+    """data/raw/*/kofia_bond_yield.xlsx 중 가장 최근 파일을 로드합니다."""
     pattern = os.path.join("data", "raw", "*", "kofia_bond_yield.xlsx")
     files   = sorted(glob.glob(pattern))
     if not files:
@@ -87,7 +63,7 @@ def _load_latest_kofia() -> pd.DataFrame | None:
         return None
 
 
-# ─── 앱 시작 시 사전 계산 (탭 렌더링 전) ─────────────────────────────────────
+# ─── 앱 시작 시 사전 계산 ────────────────────────────────────────────────────
 
 _global_df: pd.DataFrame | None = _load_global()
 _kofia_df:  pd.DataFrame | None = _load_latest_kofia()
@@ -143,8 +119,7 @@ with tab_analysis:
         if _merged_df is None:
             st.error(
                 "데이터 파일이 없습니다.  \n"
-                "- 글로벌 국채: 로컬 PC에서 `python collect_data.py` 실행 후 `git push`  \n"
-                "- KOFIA 국채: 사이드바의 **KOFIA 데이터 수집** 버튼 클릭"
+                "로컬 PC에서 `python collect_data.py` 실행 후 `git push` 해주세요."
             )
         else:
             # ── 섹션 1: 주요 금리 변화 현황 ─────────────────────────────────────

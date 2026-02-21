@@ -38,16 +38,8 @@ python modules/debug_frames.py
 
 ### Data Flow
 
-Two-tier collection strategy:
-
-| Source | 수집 방법 | 이유 |
-|--------|-----------|------|
-| investing.com (글로벌 국채) | 로컬에서 `collect_data.py` 실행 → git push | Cloudflare 우회 필요 (curl_cffi), 서버에서 차단됨 |
-| KOFIA (한국 국채) | Streamlit 앱 사이드바 버튼 → 서버에서 직접 수집 | Selenium + chromium, 서버에서 실행 가능 |
-
-- `main.py` is a Streamlit app (`streamlit run main.py`); UI controls drive data loading.
-- Sidebar **KOFIA 데이터 수집** button triggers Selenium scraping directly on the server.
-- `collect_data.py` only handles sources that cannot run on the server (currently investing.com).
+- **모든 데이터는 로컬에서 `collect_data.py`로 수집** → git push → Streamlit 서버 자동 반영
+- `main.py`는 저장된 파일만 읽어서 표시 (수집 기능 없음)
 - During development, each collector can be run standalone via its `if __name__ == "__main__"` block.
 - Dates are hardcoded in each collector's `__main__` block (not passed via CLI).
 
@@ -81,7 +73,7 @@ modules/
 - KOFIA `.xls` downloads are HTML tables: parse with `pd.read_html(flavor='lxml')`, fall back to `pd.read_excel()`
 - Downloaded filename: `최종호가 수익률.xls`; renamed/converted to `kofia_bond_yield.xlsx`
 - Output: `data/raw/YYYYMMDD/kofia_bond_yield.xlsx` (ascending date-sorted)
-- **Triggered from**: Streamlit sidebar button (runs on server)
+- **Triggered from**: `collect_data.py` (local execution, git push 후 서버 반영)
 
 KOFIA iframe navigation sequence:
 ```
