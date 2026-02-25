@@ -9,7 +9,8 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta, date
 
-from modules.utils import merge_treasury, build_change_summary, get_ref_value, standardize_kofia
+from modules.calculator.kofia import KofiaCalc
+from modules.calculator.global_treasury import TreasuryCalc
 
 
 # ─── 기준일 자동 설정: 전일 ────────────────────────────────────────────────────
@@ -50,14 +51,14 @@ def _load_global() -> pd.DataFrame | None:
 
 def _load_latest_kofia() -> pd.DataFrame | None:
     """data/raw/*/kofia_bond_yield.xlsx 중 가장 최근 파일을 로드합니다."""
-    pattern = os.path.join("data", "raw", "*", "kofia_bond_yield.xlsx")
+    pattern = os.path.join("data", "raw", "*", "treasury_summary.xlsx")
     files   = sorted(glob.glob(pattern))
     if not files:
         return None
     latest = files[-1]
     try:
         df = pd.read_excel(latest, engine="openpyxl")
-        return standardize_kofia(df)
+        return KofiaCalc.standardize(df)
     except Exception as e:
         print(f"[KOFIA] 파일 읽기 오류: {e}")
         return None
@@ -70,7 +71,7 @@ _kofia_df:  pd.DataFrame | None = _load_latest_kofia()
 
 _merged_df: pd.DataFrame | None = None
 if _global_df is not None and _kofia_df is not None:
-    _merged_df = merge_treasury(_global_df, _kofia_df)
+    _merged_df = TreasuryCalc.merge(_global_df, _kofia_df)
 elif _global_df is not None:
     _merged_df = _global_df
 elif _kofia_df is not None:
@@ -126,7 +127,7 @@ with tab_analysis:
             st.subheader("주요국 금리 동향")
             st.caption("2년물 / 10년물 기준  ·  bp = basis point (0.01%p)")
 
-            summary_df = build_change_summary(_merged_df, target_date=TARGET_DATE)
+            summary_df = TreasuryCalc.build_change_summary(_merged_df, target_date=TARGET_DATE)
 
             def _color_bp(val):
                 if pd.isna(val):
