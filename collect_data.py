@@ -132,36 +132,27 @@ print("=" * 60)
 print("2. KOFIA BondSummary")
 print("=" * 60)
 
-bs_existing = _load_csv(BOND_SUMMARY_CSV)
-bs_last     = _last_date(bs_existing)
-
-if bs_last:
-    bs_start_dt = bs_last + timedelta(days=1)
-else:
-    try:
-        bs_start_dt = end_date.replace(year=end_date.year - 5)
-    except ValueError:
-        bs_start_dt = end_date - timedelta(days=365 * 5)
+try:
+    bs_start_dt = end_date.replace(year=end_date.year - 5)
+except ValueError:
+    bs_start_dt = end_date - timedelta(days=365 * 5)
 
 bs_start_str = bs_start_dt.strftime("%Y-%m-%d")
 print(f"  기간: {bs_start_str} ~ {end_str}")
 print("  " + "-" * 40)
 
-if bs_start_dt > end_date:
-    print("  [완료] 이미 최신 데이터")
+bs = BondSummary()
+df_bond = bs.collect(start_date=bs_start_str, end_date=end_str)
+if df_bond is not None:
+    try:
+        df_std = KofiaCalc.standardize_bond(df_bond)
+        df_std.to_csv(BOND_SUMMARY_CSV)
+        print(f"  [저장] → {BOND_SUMMARY_CSV}  ({len(df_std)}행 {len(df_std.columns)}열)")
+        print(df_std.tail(3).to_string())
+    except Exception as e:
+        print(f"  [표준화 오류] {e}")
 else:
-    bs = BondSummary()
-    df_bond = bs.collect(start_date=bs_start_str, end_date=end_str)
-    if df_bond is not None:
-        try:
-            df_std = KofiaCalc.standardize_bond(df_bond)
-            merged = _merge_save(bs_existing, df_std, BOND_SUMMARY_CSV)
-            print(f"  [저장] → {BOND_SUMMARY_CSV}  ({len(merged)}행 {len(merged.columns)}열)")
-            print(merged.tail(3).to_string())
-        except Exception as e:
-            print(f"  [표준화 오류] {e}")
-    else:
-        print("  [실패] 기존 데이터 유지")
+    print("  [실패] 기존 데이터 유지")
 
 print()
 

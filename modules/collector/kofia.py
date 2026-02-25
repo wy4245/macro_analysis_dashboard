@@ -275,13 +275,14 @@ _BOND_SUMMARY_BATCHES = [
     },
 ]
 
-# 페이지 기본 체크 항목 (TreasurySummary._UNCHECK 와 동일)
-# 국고채권(3년)/item_2 는 기본 미체크 상태이므로 여기 포함하지 않음
+# 페이지 기본 체크 항목 — 신규 세션 진입 시 항상 체크되어 있는 6개 항목
 _BOND_SUMMARY_INIT_UNCHECK = [
+    "chkAnnItm_input_16",  # CD수익률(91일)
+    "chkAnnItm_input_14",  # 회사채(무보증3년)AA-
     "chkAnnItm_input_10",  # 통안증권(1년)
     "chkAnnItm_input_11",  # 통안증권(2년)
-    "chkAnnItm_input_14",  # 회사채(무보증3년)AA-
-    "chkAnnItm_input_16",  # CD수익률(91일)
+    "chkAnnItm_input_2",   # 국고채권(3년)
+    "chkAnnItm_input_3",   # 국고채권(5년)
 ]
 
 

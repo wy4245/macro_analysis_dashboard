@@ -99,9 +99,21 @@ class GlobalTreasury:
 
     def _start_browser(self) -> None:
         self._pw      = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
-        self._ctx     = self._browser.new_context(locale="en-US")
+        self._browser = self._pw.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        self._ctx = self._browser.new_context(
+            locale="en-US",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1920, "height": 1080},
+        )
         self._page    = self._ctx.new_page()
+        self._debug_html_saved = False
 
     def _stop_browser(self) -> None:
         try:
@@ -122,11 +134,11 @@ class GlobalTreasury:
 
         url = f"{self.INVESTING_BASE}/{slug}-historical-data"
         try:
-            resp = self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            resp = self._page.goto(url, wait_until="domcontentloaded", timeout=15_000)
             if resp and resp.status == 404:
                 return None
-            # Cloudflare JS 챌린지 처리 대기
-            self._page.wait_for_timeout(2_000)
+            # Cloudflare JS 챌린지 처리 대기 (충분한 시간 확보)
+            self._page.wait_for_timeout(5_000)
         except Exception as e:
             print(f"    [경고] 페이지 접근 실패 ({slug}): {e}")
             return None
@@ -137,6 +149,13 @@ class GlobalTreasury:
             self._pair_id_cache[slug] = pair_id
         else:
             print(f"    [경고] pair_id 미발견 ({slug})")
+            # 첫 번째 실패 시 HTML 저장 (원인 파악용)
+            if not self._debug_html_saved:
+                self._debug_html_saved = True
+                debug_path = _root / "data" / "debug_investing.html"
+                debug_path.parent.mkdir(parents=True, exist_ok=True)
+                debug_path.write_text(html, encoding="utf-8")
+                print(f"    [디버그] HTML 저장 → {debug_path}")
         return pair_id
 
     @staticmethod
