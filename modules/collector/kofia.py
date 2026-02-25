@@ -1,14 +1,17 @@
 """
 KOFIA 데이터 수집기
 
-TreasurySummary : 주요 만기 국채 금리 (1년치) — 기간별 탭, 5개 시리즈
-BondSummary     : 전종목 최종호가수익률 (5년치) — 18개 시리즈, 3배치 수집 후 병합
+TreasurySummary : 주요 만기 국채 금리 — 기간별 탭, 5개 시리즈
+BondSummary     : 전종목 최종호가수익률 — 18개 시리즈, 3배치 수집 후 병합
 
 공통 흐름:
   default_content
     → frame "fraAMAKMain"  (메뉴 클릭)
     → frame "maincontent"  (기간별 탭 클릭)
     → frame "tabContents1_contents_tabs2_body"  (날짜·체크박스 조작)
+
+collect() 는 파일을 저장하지 않고 DataFrame을 반환합니다.
+저장·병합은 collect_data.py 에서 처리합니다.
 """
 
 import os
@@ -22,8 +25,6 @@ _root = Path(__file__).resolve().parents[2]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
-from modules.calculator.kofia import KofiaCalc  # noqa: E402
-
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -35,8 +36,8 @@ from webdriver_manager.chrome import ChromeDriverManager
 
 # ─── 공통 Selenium 헬퍼 ───────────────────────────────────────────────────────
 
-_KOFIA_URL        = "https://www.kofiabond.or.kr/index.html"
-_KOFIA_DL_FILE    = "최종호가 수익률.xls"
+_KOFIA_URL     = "https://www.kofiabond.or.kr/index.html"
+_KOFIA_DL_FILE = "최종호가 수익률.xls"
 
 
 def _build_options(headless: bool, download_path: str) -> Options:
@@ -80,11 +81,13 @@ def _safe_click(driver, wait, by, value):
     driver.execute_script("arguments[0].click();", el)
 
 
-def _set_checkbox(driver, cid: str, checked: bool):
+def _force_click_checkbox(driver, cid: str):
+    """is_selected() 없이 체크박스를 직접 클릭합니다.
+    WebSquare 커스텀 체크박스는 is_selected()가 항상 False를 반환하므로
+    상태 조회 없이 caller가 상태를 추적하여 호출해야 합니다."""
     try:
         cb = driver.find_element(By.ID, cid)
-        if cb.is_selected() != checked:
-            driver.execute_script("arguments[0].click();", cb)
+        driver.execute_script("arguments[0].click();", cb)
     except Exception:
         pass
 
@@ -104,7 +107,7 @@ def _wait_for_download(save_dir: str, cwd: str, timeout: int = 30) -> str | None
         for p in [
             os.path.join(save_dir, _KOFIA_DL_FILE),
             os.path.join(cwd, _KOFIA_DL_FILE),
-            os.path.join(cwd, "data", "raw", _KOFIA_DL_FILE),
+            os.path.join(cwd, "data", _KOFIA_DL_FILE),
         ]:
             if os.path.exists(p):
                 return p
@@ -147,69 +150,53 @@ def _parse_kofia_xls(file_path: str) -> pd.DataFrame | None:
 
 class TreasurySummary:
     """
-    KOFIA 주요 만기 국채 금리 수집 (1년치).
+    KOFIA 주요 만기 국채 금리 수집.
 
     수집 대상: 국고채 2/3/10/20/30년
-    출력 파일: data/raw/YYYYMMDD/treasury_summary.xlsx
+    반환: Date 컬럼 + 금리 컬럼들의 DataFrame (저장은 collect_data.py 에서 처리)
     """
 
-    # 기본 체크 해제 (페이지 로드 시 기본 선택됨)
     _UNCHECK = ["chkAnnItm_input_10", "chkAnnItm_input_11",
                 "chkAnnItm_input_14", "chkAnnItm_input_16"]
-    # 수집 대상 체크 (KTB 2/3/10/20/30yr)
     _CHECK   = ["chkAnnItm_input_1", "chkAnnItm_input_2",
                 "chkAnnItm_input_4", "chkAnnItm_input_5", "chkAnnItm_input_6"]
 
     def __init__(self, download_dir: str | None = None):
         if download_dir is None:
-            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data", "raw"))
+            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data"))
         else:
             self.download_dir = os.path.abspath(download_dir)
-        os.makedirs(self.download_dir, exist_ok=True)
+        self._tmp_dir = os.path.join(self.download_dir, "tmp")
+        os.makedirs(self._tmp_dir, exist_ok=True)
 
-    def collect(self, target_date=None, headless: bool = True) -> bool:
+    def collect(self, start_date: str, end_date: str, headless: bool = True) -> pd.DataFrame | None:
         """
-        Selenium으로 KOFIA 기간별 탭을 조작하여 국채 금리 xlsx를 수집합니다.
+        Selenium으로 KOFIA 기간별 탭을 조작하여 국채 금리 데이터를 수집합니다.
 
         Args:
-            target_date: "YYYYMMDD" 문자열 또는 datetime (없으면 오늘)
-            headless   : True이면 브라우저 창 없이 실행
+            start_date: "YYYY-MM-DD"
+            end_date  : "YYYY-MM-DD"
+            headless  : True이면 브라우저 창 없이 실행
 
         Returns:
-            True on success, False on failure.
+            Date 컬럼을 포함한 DataFrame. 실패 시 None.
         """
-        from datetime import timedelta
-
-        if not target_date:
-            target_date = datetime.now()
-        elif isinstance(target_date, str):
-            target_date = datetime.strptime(target_date, "%Y%m%d")
-
-        end_str = target_date.strftime("%Y-%m-%d")
-        try:
-            start_dt = target_date.replace(year=target_date.year - 1)
-        except ValueError:
-            start_dt = target_date - timedelta(days=365)
-        start_str = start_dt.strftime("%Y-%m-%d")
-
-        date_str       = target_date.strftime("%Y%m%d")
-        daily_save_dir = os.path.join(self.download_dir, date_str)
-        os.makedirs(daily_save_dir, exist_ok=True)
-
         driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
-            options=_build_options(headless, daily_save_dir),
+            options=_build_options(headless, self._tmp_dir),
         )
         wait = WebDriverWait(driver, 30)
 
         try:
             _navigate_to_period_tab(driver, wait)
-            _set_date_range(driver, wait, start_str, end_str)
+            _set_date_range(driver, wait, start_date, end_date)
 
+            # 기본 체크 해제: 페이지 기본값으로 체크된 항목을 직접 클릭해서 해제
             for cid in self._UNCHECK:
-                _set_checkbox(driver, cid, False)
+                _force_click_checkbox(driver, cid)
+            # 수집 대상 체크: 현재 모두 해제된 상태이므로 직접 클릭해서 체크
             for cid in self._CHECK:
-                _set_checkbox(driver, cid, True)
+                _force_click_checkbox(driver, cid)
             time.sleep(1)
 
             _safe_click(driver, wait, By.ID, "image4")
@@ -217,27 +204,24 @@ class TreasurySummary:
             _safe_click(driver, wait, By.ID, "imgExcel")
             time.sleep(5)
 
-            dl = _wait_for_download(daily_save_dir, os.getcwd())
+            dl = _wait_for_download(self._tmp_dir, os.getcwd())
             if not dl:
                 print("  [오류] 다운로드 파일 미발견")
-                return False
-
-            final = os.path.join(daily_save_dir, "treasury_summary.xlsx")
-            if os.path.exists(final):
-                os.remove(final)
+                return None
 
             df = _parse_kofia_xls(dl)
-            if df is not None and "Date" in df.columns:
-                df = df.sort_values("Date", ascending=True)
-                df.to_excel(final, index=False, engine="openpyxl")
-                if os.path.exists(dl):
-                    os.remove(dl)
-                print(f"  [완료] {final}  ({len(df)}행)")
-            else:
-                os.rename(dl, os.path.join(daily_save_dir, "treasury_summary.xls"))
-                print("  [경고] 날짜 컬럼 미발견 — 파일명만 변경")
+            try:
+                os.remove(dl)
+            except Exception:
+                pass
 
-            return True
+            if df is None or "Date" not in df.columns:
+                print("  [경고] 날짜 컬럼 미발견")
+                return None
+
+            df = df.sort_values("Date", ascending=True).reset_index(drop=True)
+            print(f"  [완료] {len(df)}행")
+            return df
 
         except Exception as e:
             print(f"  [Selenium 오류] {e}")
@@ -246,29 +230,9 @@ class TreasurySummary:
                     f.write(driver.page_source)
             except Exception:
                 pass
-            return False
+            return None
         finally:
             driver.quit()
-
-    def load(self, target_date) -> pd.DataFrame | None:
-        """
-        저장된 treasury_summary.xlsx 를 읽어 표준화된 DataFrame으로 반환.
-
-        Returns:
-            Date 인덱스, KR_{n}Y 컬럼 형식의 DataFrame. 실패 시 None.
-        """
-        date_str  = target_date.strftime("%Y%m%d") if isinstance(target_date, datetime) else str(target_date)
-        file_path = os.path.join(self.download_dir, date_str, "treasury_summary.xlsx")
-
-        if not os.path.exists(file_path):
-            print(f"  [파일 없음] {file_path}")
-            return None
-        try:
-            df = pd.read_excel(file_path, engine="openpyxl")
-            return KofiaCalc.standardize(df)
-        except Exception as e:
-            print(f"  [읽기 오류] {e}")
-            return None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -311,86 +275,78 @@ _BOND_SUMMARY_BATCHES = [
     },
 ]
 
+# 페이지 기본 체크 항목 (TreasurySummary._UNCHECK 와 동일)
+# 국고채권(3년)/item_2 는 기본 미체크 상태이므로 여기 포함하지 않음
 _BOND_SUMMARY_INIT_UNCHECK = [
-    "chkAnnItm_input_16",  # CD수익률(91일)
-    "chkAnnItm_input_14",  # 회사채(무보증3년)AA-
     "chkAnnItm_input_10",  # 통안증권(1년)
     "chkAnnItm_input_11",  # 통안증권(2년)
-    "chkAnnItm_input_2",   # 국고채권(3년)
+    "chkAnnItm_input_14",  # 회사채(무보증3년)AA-
+    "chkAnnItm_input_16",  # CD수익률(91일)
 ]
 
 
 class BondSummary:
     """
-    KOFIA 최종호가수익률 전종목 수집 (5년치).
+    KOFIA 최종호가수익률 전종목 수집.
 
     18개 시리즈를 6개씩 3배치로 나눠 수집 후 Date 기준 merge.
     배치: A(국고채 1~20년) / B(국고채 30·50년 + 통안증권) / C(한전채·산금채·회사채·CD·CP)
-    출력 파일: data/raw/YYYYMMDD/bond_summary.xlsx
-              (임시: bond_summary_A/B/C.xls → 병합 후 삭제)
+    반환: Date 컬럼 + 18개 시리즈 컬럼들의 DataFrame (저장은 collect_data.py 에서 처리)
     """
 
     def __init__(self, download_dir: str | None = None):
         if download_dir is None:
-            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data", "raw"))
+            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data"))
         else:
             self.download_dir = os.path.abspath(download_dir)
-        os.makedirs(self.download_dir, exist_ok=True)
+        self._tmp_dir = os.path.join(self.download_dir, "tmp")
+        os.makedirs(self._tmp_dir, exist_ok=True)
 
-    def collect(self, target_date=None, headless: bool = True) -> bool:
+    def collect(self, start_date: str, end_date: str, headless: bool = True) -> pd.DataFrame | None:
         """
-        3배치 수집 후 병합하여 bond_summary.xlsx 저장.
+        배치(A/B/C)마다 독립 Chrome 세션으로 수집 후 병합하여 반환합니다.
+
+        배치당 독립 세션을 사용하는 이유:
+          - 엑셀 다운로드 후 WebSquare가 내부 상태를 리셋할 수 있어,
+            단일 세션에서 배치 간 체크박스 상태가 오염될 수 있음
+          - 독립 세션은 항상 알려진 초기 상태(기본 체크 항목 고정)에서 시작
 
         Args:
-            target_date: "YYYYMMDD" 문자열 또는 datetime (없으면 오늘)
-            headless   : True이면 브라우저 창 없이 실행
+            start_date: "YYYY-MM-DD"
+            end_date  : "YYYY-MM-DD"
+            headless  : True이면 브라우저 창 없이 실행
 
         Returns:
-            True on success, False on failure.
+            Date 컬럼을 포함한 병합 DataFrame. 실패 시 None.
         """
-        from datetime import timedelta
+        print(f"  기간: {start_date} ~ {end_date}")
 
-        if not target_date:
-            target_date = datetime.now()
-        elif isinstance(target_date, str):
-            target_date = datetime.strptime(target_date, "%Y%m%d")
+        chromedriver_path = ChromeDriverManager().install()
+        batch_files: list[tuple[str, str]] = []
 
-        end_str = target_date.strftime("%Y-%m-%d")
-        try:
-            start_dt = target_date.replace(year=target_date.year - 5)
-        except ValueError:
-            start_dt = target_date - timedelta(days=365 * 5)
-        start_str = start_dt.strftime("%Y-%m-%d")
-        print(f"  기간: {start_str} ~ {end_str}")
+        for batch in _BOND_SUMMARY_BATCHES:
+            bname = batch["name"]
+            bids  = batch["ids"]
+            print(f"  [배치 {bname}] 수집 시작...")
 
-        date_str       = target_date.strftime("%Y%m%d")
-        daily_save_dir = os.path.join(self.download_dir, date_str)
-        os.makedirs(daily_save_dir, exist_ok=True)
+            driver = webdriver.Chrome(
+                service=Service(chromedriver_path),
+                options=_build_options(headless, self._tmp_dir),
+            )
+            wait = WebDriverWait(driver, 30)
 
-        driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=_build_options(headless, daily_save_dir),
-        )
-        wait = WebDriverWait(driver, 30)
+            try:
+                _navigate_to_period_tab(driver, wait)
+                _set_date_range(driver, wait, start_date, end_date)
 
-        try:
-            _navigate_to_period_tab(driver, wait)
-            _set_date_range(driver, wait, start_str, end_str)
+                # 페이지 기본 체크 항목 해제 (신규 세션이므로 항상 알려진 초기 상태)
+                for cid in _BOND_SUMMARY_INIT_UNCHECK:
+                    _force_click_checkbox(driver, cid)
+                time.sleep(0.3)
 
-            # 초기 해제
-            for cid in _BOND_SUMMARY_INIT_UNCHECK:
-                _set_checkbox(driver, cid, False)
-            time.sleep(0.5)
-
-            batch_files: list[tuple[str, str]] = []
-
-            for batch in _BOND_SUMMARY_BATCHES:
-                bname = batch["name"]
-                bids  = batch["ids"]
-                print(f"  [배치 {bname}] 수집 시작...")
-
+                # 이 배치만 체크
                 for cid in bids:
-                    _set_checkbox(driver, cid, True)
+                    _force_click_checkbox(driver, cid)
                 time.sleep(0.5)
 
                 _safe_click(driver, wait, By.ID, "image4")
@@ -398,9 +354,9 @@ class BondSummary:
                 _safe_click(driver, wait, By.ID, "imgExcel")
                 time.sleep(5)
 
-                dl = _wait_for_download(daily_save_dir, os.getcwd())
+                dl = _wait_for_download(self._tmp_dir, os.getcwd())
                 if dl:
-                    dest = os.path.join(daily_save_dir, f"bond_summary_{bname}.xls")
+                    dest = os.path.join(self._tmp_dir, f"bond_summary_{bname}.xls")
                     if os.path.exists(dest):
                         os.remove(dest)
                     os.rename(dl, dest)
@@ -409,96 +365,92 @@ class BondSummary:
                 else:
                     print(f"  [배치 {bname}] 다운로드 실패 — 건너뜀")
 
-                for cid in bids:
-                    _set_checkbox(driver, cid, False)
-                time.sleep(0.5)
-
-            if not batch_files:
-                print("  [실패] 다운로드된 파일 없음")
-                return False
-
-            # 병합
-            dfs: list[pd.DataFrame] = []
-            for bname, path in batch_files:
-                df = _parse_kofia_xls(path)
-                if df is not None:
-                    dfs.append(df)
-                    print(f"  [배치 {bname}] {len(df)}행, {len(df.columns) - 1}열 파싱 완료")
-
-            if not dfs:
-                print("  [실패] 파싱 가능한 파일 없음")
-                return False
-
-            merged = dfs[0]
-            for df in dfs[1:]:
-                merged = merged.merge(df, on="Date", how="outer")
-            merged = merged.sort_values("Date", ascending=True).reset_index(drop=True)
-
-            final = os.path.join(daily_save_dir, "bond_summary.xlsx")
-            if os.path.exists(final):
-                os.remove(final)
-            merged.to_excel(final, index=False, engine="openpyxl")
-            print(f"  [완료] 병합 완료: {final}  ({len(merged)}행, {len(merged.columns)}열)")
-
-            for _, path in batch_files:
+            except Exception as e:
+                print(f"  [배치 {bname}] Selenium 오류: {e}")
                 try:
-                    os.remove(path)
+                    with open(
+                        os.path.join(self.download_dir, f"selenium_error_bond_{bname}.html"),
+                        "w", encoding="utf-8",
+                    ) as f:
+                        f.write(driver.page_source)
                 except Exception:
                     pass
+            finally:
+                driver.quit()
 
-            return True
+        if not batch_files:
+            print("  [실패] 다운로드된 파일 없음")
+            return None
 
-        except Exception as e:
-            print(f"  [Selenium 오류] {e}")
+        dfs: list[pd.DataFrame] = []
+        for bname, path in batch_files:
+            df = _parse_kofia_xls(path)
+            if df is not None:
+                dfs.append(df)
+                print(f"  [배치 {bname}] {len(df)}행, {len(df.columns) - 1}열 파싱 완료")
+
+        for _, path in batch_files:
             try:
-                with open(os.path.join(self.download_dir, "selenium_error_bond_summary.html"), "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
+                os.remove(path)
             except Exception:
                 pass
-            return False
-        finally:
-            driver.quit()
 
-    def load(self, target_date) -> pd.DataFrame | None:
-        """
-        저장된 bond_summary.xlsx 를 읽어 DataFrame으로 반환.
-
-        Returns:
-            pd.DataFrame, 실패 시 None.
-        """
-        date_str  = target_date.strftime("%Y%m%d") if isinstance(target_date, datetime) else str(target_date)
-        file_path = os.path.join(self.download_dir, date_str, "bond_summary.xlsx")
-
-        if not os.path.exists(file_path):
-            print(f"  [파일 없음] {file_path}")
+        if not dfs:
+            print("  [실패] 파싱 가능한 파일 없음")
             return None
-        try:
-            return pd.read_excel(file_path, engine="openpyxl")
-        except Exception as e:
-            print(f"  [읽기 오류] {e}")
-            return None
+
+        # Date를 인덱스로 설정 후 axis=1 방향으로 concat (outer join → 날짜 범위 통일)
+        dfs_indexed = [df.set_index("Date") for df in dfs]
+        merged_idx = pd.concat(dfs_indexed, axis=1)
+
+        # 동일 컬럼명이 여러 배치에 중복된 경우(KOFIA XLS가 전종목 헤더를 포함할 때)
+        # → 각 컬럼별 첫 번째 non-NaN 값으로 결합
+        if merged_idx.columns.duplicated().any():
+            unique_cols = list(dict.fromkeys(merged_idx.columns))
+            deduped: dict[str, pd.Series] = {}
+            for col in unique_cols:
+                sub = merged_idx.loc[:, merged_idx.columns == col]
+                if sub.shape[1] > 1:
+                    combined = sub.iloc[:, 0]
+                    for i in range(1, sub.shape[1]):
+                        combined = combined.combine_first(sub.iloc[:, i])
+                    deduped[col] = combined
+                else:
+                    deduped[col] = sub.iloc[:, 0]
+            merged_idx = pd.DataFrame(deduped, index=merged_idx.index)
+
+        merged = merged_idx.reset_index()
+        merged = merged.sort_values("Date", ascending=True).reset_index(drop=True)
+        print(f"  [완료] 병합 완료  ({len(merged)}행, {len(merged.columns)}열)")
+        return merged
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     from datetime import date, timedelta
+    from modules.calculator.kofia import KofiaCalc
 
-    _target    = date.today() - timedelta(days=1)
-    target_str = _target.strftime("%Y%m%d")
+    _end = date.today() - timedelta(days=1)
+    try:
+        _start_1y = _end.replace(year=_end.year - 1)
+    except ValueError:
+        _start_1y = _end - timedelta(days=365)
+    try:
+        _start_5y = _end.replace(year=_end.year - 5)
+    except ValueError:
+        _start_5y = _end - timedelta(days=365 * 5)
 
-    print(f"=== TreasurySummary | 기준일: {target_str} ===")
+    print(f"=== TreasurySummary | {_start_1y} ~ {_end} ===")
     ts = TreasurySummary()
-    if ts.collect(target_date=target_str, headless=True):
-        df = ts.load(target_str)
-        if df is not None:
-            print(df.tail())
+    df = ts.collect(start_date=str(_start_1y), end_date=str(_end))
+    if df is not None:
+        print(KofiaCalc.standardize(df).tail())
 
     print()
-    print(f"=== BondSummary | 기준일: {target_str} ===")
+    print(f"=== BondSummary | {_start_5y} ~ {_end} ===")
     bs = BondSummary()
-    if bs.collect(target_date=target_str, headless=True):
-        df = bs.load(target_str)
-        if df is not None:
-            print(df.tail())
-            print(f"컬럼: {df.columns.tolist()}")
+    df = bs.collect(start_date=str(_start_5y), end_date=str(_end))
+    if df is not None:
+        print(df.tail())
+        print(f"컬럼: {df.columns.tolist()}")

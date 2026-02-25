@@ -2,14 +2,12 @@
 
 
 import os
-import glob
 import streamlit as st
 import plotly.graph_objects as go
 import plotly.express as px
 import pandas as pd
 from datetime import datetime, timedelta, date
 
-from modules.calculator.kofia import KofiaCalc
 from modules.calculator.global_treasury import TreasuryCalc
 
 
@@ -50,15 +48,14 @@ def _load_global() -> pd.DataFrame | None:
 
 
 def _load_latest_kofia() -> pd.DataFrame | None:
-    """data/raw/*/kofia_bond_yield.xlsx 중 가장 최근 파일을 로드합니다."""
-    pattern = os.path.join("data", "raw", "*", "treasury_summary.xlsx")
-    files   = sorted(glob.glob(pattern))
-    if not files:
+    """data/treasury_summary.csv 에서 KOFIA 국채 데이터를 로드합니다."""
+    csv_path = os.path.join("data", "treasury_summary.csv")
+    if not os.path.exists(csv_path):
         return None
-    latest = files[-1]
     try:
-        df = pd.read_excel(latest, engine="openpyxl")
-        return KofiaCalc.standardize(df)
+        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        df.index.name = "Date"
+        return df
     except Exception as e:
         print(f"[KOFIA] 파일 읽기 오류: {e}")
         return None

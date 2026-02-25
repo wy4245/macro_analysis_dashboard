@@ -1,66 +1,32 @@
 """
 investing.com 데이터 수집기
 
-GlobalTreasury : 글로벌 주요국 국채 금리 (curl_cffi Cloudflare 우회)
+GlobalTreasury : 글로벌 주요국 국채 금리 (Playwright Chromium)
   collect(start_date, end_date) -> pd.DataFrame | None
 
 수집 국가: US / DE / GB / JP / CN  |  만기: 2/3/5/10/20/30년
 컬럼 형식: {CC}_{n}Y  (예: US_10Y, DE_2Y)
 
 구현 방식:
-  1. curl_cffi Session(impersonate="chrome120") → Cloudflare 쿠키 획득
-  2. __NEXT_DATA__ > state.bondStore.instrumentId 에서 pair_id 추출
-  3. POST /instruments/HistoricalDataAjax → HTML 테이블 반환 → pd.read_html 파싱
-
-※ SSL workaround: _ensure_ascii_ssl_cert() — 한글 경로 환경의 certifi 경로 문제 회피.
-   모듈 import 시 자동 실행되므로 제거하지 마세요.
+  1. Playwright Chromium headless → Cloudflare 우회 (실제 브라우저 실행)
+  2. __NEXT_DATA__ > props.pageProps.state.bondStore.instrumentId 에서 pair_id 추출
+  3. page.evaluate() fetch POST /instruments/HistoricalDataAjax → HTML 테이블 파싱
 """
 
-import os
 import re
 import sys
 import json
 import time
-import shutil
-import tempfile
 from io import StringIO
 from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
-from curl_cffi import requests as cffi_requests
+from playwright.sync_api import sync_playwright
 
 _root = Path(__file__).resolve().parents[2]
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
-
-
-def _ensure_ascii_ssl_cert() -> None:
-    """
-    Windows 환경에서 프로젝트 경로에 한글이 포함된 경우
-    libcurl이 certifi CA 번들 경로를 읽지 못하는 문제를 회피합니다.
-    ASCII 경로의 임시 디렉터리에 번들을 복사합니다.
-    """
-    try:
-        import certifi
-        src = certifi.where()
-        try:
-            src.encode("ascii")
-            return
-        except UnicodeEncodeError:
-            pass
-        dst_dir = os.path.join(tempfile.gettempdir(), "mat_certs")
-        os.makedirs(dst_dir, exist_ok=True)
-        dst = os.path.join(dst_dir, "cacert.pem")
-        if not os.path.exists(dst) or os.path.getmtime(src) > os.path.getmtime(dst):
-            shutil.copy(src, dst)
-        for var in ("REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "CURL_CA_BUNDLE"):
-            os.environ[var] = dst
-    except Exception:
-        pass
-
-
-_ensure_ascii_ssl_cert()
 
 from modules.calculator.global_treasury import TreasuryCalc  # noqa: E402
 
@@ -122,18 +88,31 @@ class GlobalTreasury:
     INVESTING_BASE = "https://www.investing.com/rates-bonds"
     HIST_AJAX_URL  = "https://www.investing.com/instruments/HistoricalDataAjax"
 
-    _BROWSER_HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
     def __init__(self) -> None:
-        self._session        = cffi_requests.Session(impersonate="chrome120")
         self._pair_id_cache: dict[str, int] = {}
+        self._pw      = None
+        self._browser = None
+        self._ctx     = None
+        self._page    = None
+
+    # ── 브라우저 시작/종료 ─────────────────────────────────────────────────────
+
+    def _start_browser(self) -> None:
+        self._pw      = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(headless=True)
+        self._ctx     = self._browser.new_context(locale="en-US")
+        self._page    = self._ctx.new_page()
+
+    def _stop_browser(self) -> None:
+        try:
+            self._browser.close()
+        except Exception:
+            pass
+        try:
+            self._pw.stop()
+        except Exception:
+            pass
+        self._page = self._ctx = self._browser = self._pw = None
 
     # ── pair_id 조회 ──────────────────────────────────────────────────────────
 
@@ -143,19 +122,17 @@ class GlobalTreasury:
 
         url = f"{self.INVESTING_BASE}/{slug}-historical-data"
         try:
-            resp = self._session.get(
-                url,
-                headers={**self._BROWSER_HEADERS, "Accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
-                timeout=30,
-            )
-            if resp.status_code == 404:
+            resp = self._page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+            if resp and resp.status == 404:
                 return None
-            resp.raise_for_status()
+            # Cloudflare JS 챌린지 처리 대기
+            self._page.wait_for_timeout(2_000)
         except Exception as e:
             print(f"    [경고] 페이지 접근 실패 ({slug}): {e}")
             return None
 
-        pair_id = self._extract_pair_id(resp.text)
+        html = self._page.content()
+        pair_id = self._extract_pair_id(html)
         if pair_id:
             self._pair_id_cache[slug] = pair_id
         else:
@@ -222,23 +199,41 @@ class GlobalTreasury:
         st = datetime.strptime(start_date, "%Y-%m-%d").strftime("%m/%d/%Y")
         en = datetime.strptime(end_date,   "%Y-%m-%d").strftime("%m/%d/%Y")
 
-        headers = {
-            **self._BROWSER_HEADERS,
-            "X-Requested-With": "XMLHttpRequest",
-            "Accept":           "text/plain, */*; q=0.01",
-            "Content-Type":     "application/x-www-form-urlencoded",
-            "Referer":          f"{self.INVESTING_BASE}/{slug}-historical-data",
-        }
         form_data = {
-            "curr_id": str(pair_id), "smlID": "",
-            "st_date": st, "end_date": en,
-            "interval_sec": "Daily", "sort_col": "date", "sort_ord": "ASC",
-            "action": "historical_data",
+            "curr_id":     str(pair_id),
+            "smlID":       "",
+            "st_date":     st,
+            "end_date":    en,
+            "interval_sec": "Daily",
+            "sort_col":    "date",
+            "sort_ord":    "ASC",
+            "action":      "historical_data",
         }
+        referer = f"{self.INVESTING_BASE}/{slug}-historical-data"
+
         try:
-            resp = self._session.post(self.HIST_AJAX_URL, data=form_data, headers=headers, timeout=30)
-            resp.raise_for_status()
-            dfs = pd.read_html(StringIO(resp.text))
+            # 브라우저 컨텍스트 내 fetch 실행 → Cloudflare 쿠키 자동 포함
+            html_text: str = self._page.evaluate(
+                """
+                async ([url, data, referer]) => {
+                    const resp = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Accept': 'text/plain, */*; q=0.01',
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'Referer': referer,
+                        },
+                        body: new URLSearchParams(data).toString(),
+                    });
+                    return resp.text();
+                }
+                """,
+                [self.HIST_AJAX_URL, form_data, referer],
+            )
+            if not html_text:
+                return None
+            dfs = pd.read_html(StringIO(html_text))
             if not dfs:
                 return None
             df = dfs[0]
@@ -269,26 +264,30 @@ class GlobalTreasury:
         total = sum(len(m) for m in self.BOND_SLUGS.values())
         done  = 0
 
-        for country, maturities in self.BOND_SLUGS.items():
-            for tenor, slug in maturities.items():
-                done += 1
-                col = f"{country}_{tenor}Y"
-                print(f"  [{done}/{total}] {col} 수집 중...", flush=True)
+        self._start_browser()
+        try:
+            for country, maturities in self.BOND_SLUGS.items():
+                for tenor, slug in maturities.items():
+                    done += 1
+                    col = f"{country}_{tenor}Y"
+                    print(f"  [{done}/{total}] {col} 수집 중...", flush=True)
 
-                pair_id = self._get_pair_id(slug)
-                if pair_id is None:
-                    print(f"    → 건너뜀 (pair_id 없음)")
-                    time.sleep(0.3)
-                    continue
+                    pair_id = self._get_pair_id(slug)
+                    if pair_id is None:
+                        print(f"    → 건너뜀 (pair_id 없음)")
+                        time.sleep(0.3)
+                        continue
 
-                time.sleep(0.5)
-                series = self._fetch_history(pair_id, slug, start_date, end_date)
-                if series is not None and not series.empty:
-                    all_series[col] = series
-                    print(f"    → {len(series)}행 수집 완료")
-                else:
-                    print(f"    → 데이터 없음")
-                time.sleep(0.5)
+                    time.sleep(0.5)
+                    series = self._fetch_history(pair_id, slug, start_date, end_date)
+                    if series is not None and not series.empty:
+                        all_series[col] = series
+                        print(f"    → {len(series)}행 수집 완료")
+                    else:
+                        print(f"    → 데이터 없음")
+                    time.sleep(0.5)
+        finally:
+            self._stop_browser()
 
         if not all_series:
             print("  [오류] 수집된 데이터 없음")

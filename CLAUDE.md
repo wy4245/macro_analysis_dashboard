@@ -24,8 +24,8 @@ pip install -r requirements.txt
 streamlit run main.py
 
 # Run individual collectors standalone (each has its own __main__ block for development)
-python modules/collector/kofia/treasury_summary.py
-python modules/collector/investing/global_treasury_rate.py
+python modules/collector/kofia.py
+python modules/collector/investing.py
 
 # Collect data that cannot run on the server (investing.com) and push to git
 python collect_data.py
@@ -47,7 +47,7 @@ python modules/debug_frames.py
 
 1. Determine if the source can run on the server or requires local execution:
    - **Server-runnable** (requests, Selenium with system chromium): Add a collection button to the `st.sidebar` in `main.py`
-   - **Local-only** (Cloudflare bypass, curl_cffi): Add to `collect_data.py`
+   - **Local-only** (Cloudflare bypass, Playwright): Add to `collect_data.py`
 2. Create `modules/collector/<source_name>/<data_name>.py` with a class exposing a method returning `pd.DataFrame | None`
 3. In `main.py`, add a new tab name to the `st.tabs([...])` list and a `with tab_<name>:` block
 
@@ -56,24 +56,28 @@ python modules/debug_frames.py
 ```
 modules/
   collector/
-    kofia/
-      treasury_summary.py     # KofiaBondCollector — KOFIA domestic bond yields (Selenium)
-    investing/
-      global_treasury_rate.py # GlobalTreasuryCollector — global gov bond yields (curl_cffi)
-  debug_frames.py             # iframe inspection utility for KOFIA site
-  utils.py                    # shared utilities (fill_calendar, standardize_kofia, etc.)
+    kofia.py      # TreasurySummary, BondSummary — KOFIA 국채 (Selenium)
+    investing.py  # GlobalTreasury — 글로벌 국채 (Playwright)
+  calculator/
+    kofia.py           # KofiaCalc — standardize(), fill_calendar()
+    global_treasury.py # TreasuryCalc — fill_calendar(), merge(), build_change_summary()
+  debug_frames.py  # iframe 구조 확인용 (headless 비활성 상태로 실행)
 ```
 
 ### Collectors
 
-**`KofiaBondCollector`** (`modules/collector/kofia/treasury_summary.py`)
+**`TreasurySummary`** (`modules/collector/kofia.py`)
 - Selenium-based; navigates the KOFIA WebSquare site
-- `Treasury_Collector_Selenium(target_date, headless=True) -> bool` — downloads Korean Treasury yields (2, 3, 10, 20, 30yr) for a 1-year window ending at `target_date`; returns `True` on success
-- `load_excel(target_date) -> pd.DataFrame | None` — reads a previously downloaded file from disk
+- `collect(start_date, end_date, headless=True) -> pd.DataFrame | None` — Date 컬럼 포함 raw DataFrame 반환
+- 파일 저장 없음; 저장·병합은 `collect_data.py` 에서 처리
+- `KofiaCalc.standardize()` 적용 후 `data/treasury_summary.csv` 에 증분 저장됨
 - KOFIA `.xls` downloads are HTML tables: parse with `pd.read_html(flavor='lxml')`, fall back to `pd.read_excel()`
-- Downloaded filename: `최종호가 수익률.xls`; renamed/converted to `kofia_bond_yield.xlsx`
-- Output: `data/raw/YYYYMMDD/kofia_bond_yield.xlsx` (ascending date-sorted)
-- **Triggered from**: `collect_data.py` (local execution, git push 후 서버 반영)
+- Selenium 임시 다운로드 위치: `data/tmp/` (자동 정리)
+
+**`BondSummary`** (`modules/collector/kofia.py`)
+- 18개 시리즈를 6개씩 3배치(A/B/C)로 수집 후 Date 기준 merge
+- `collect(start_date, end_date, headless=True) -> pd.DataFrame | None`
+- `data/bond_summary.csv` 에 증분 저장됨
 
 KOFIA iframe navigation sequence:
 ```
@@ -83,35 +87,42 @@ Menu IDs: `genLv1_0_imgLv1` → `genLv1_0_genLv2_0_txtLv2`; period tab: `tabCont
 
 Bond checkbox IDs — uncheck: `chkAnnItm_input_10/11/14/16`; check (KTB 2/3/10/20/30yr): `chkAnnItm_input_1/2/4/5/6`
 
-**`GlobalTreasuryCollector`** (`modules/collector/investing/global_treasury_rate.py`)
-- Uses `curl_cffi` (Cloudflare bypass) + investing.com scraping
-- Downloads US, DE, GB, JP, CN treasury yields; 29 maturities (US 20Y unavailable on investing.com)
+**`GlobalTreasury`** (`modules/collector/investing.py`)
+- Uses `playwright` Chromium headless (Cloudflare bypass) + investing.com scraping
+- Downloads US, DE, GB, JP, CN treasury yields; 30 maturities
 - Wide format, columns: `{CC}_{n}Y` (e.g. `US_10Y`, `DE_2Y`)
 - `collect(start_date, end_date) -> pd.DataFrame | None` — returns data directly (no disk write)
-- Data is trading-day only; NaN where a market is closed on a given date
-- **Triggered from**: `collect_data.py` (local execution only)
+- `data/global_treasury.csv` 에 증분 저장됨
+- 첫 실행 전 Chromium 설치 필요: `playwright install chromium`
 
 investing.com 스크래핑 흐름:
-1. `curl_cffi.Session(impersonate="chrome120")` → Cloudflare 쿠키 획득
-2. `__NEXT_DATA__ > state.bondStore.instrumentId`(str)에서 pair_id 추출 — `int()` 변환 필수 (str로 저장됨)
-3. `POST /instruments/HistoricalDataAjax` (날짜 형식: `MM/DD/YYYY`) → HTML 테이블 반환 → `pd.read_html`로 파싱
+1. `sync_playwright()` → Chromium headless 실행 → `page.goto()` 로 채권 페이지 탐색 (Cloudflare 쿠키 자동 획득)
+2. `page.content()` HTML에서 `__NEXT_DATA__ > props.pageProps.state.bondStore.instrumentId` 로 pair_id 추출 — `int()` 변환 필수 (str로 저장됨)
+3. `page.evaluate()` 내 `fetch POST /instruments/HistoricalDataAjax` (날짜 형식: `MM/DD/YYYY`) → HTML 테이블 반환 → `pd.read_html`로 파싱
 
 GB 슬러그: `uk-{n}-year-bond-yield` (u.k. 형식 아님); US 20Y 슬러그: `us-20-year-bond-yield` (u.s. 형식 아님)
 
-- **SSL workaround**: `_ensure_ascii_ssl_cert()` runs at module import time — copies the certifi CA bundle to an ASCII-safe temp path (`%TEMP%/mat_certs/cacert.pem`) and sets `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`. Required because this project lives under a Korean-character path; do not remove.
+### 증분 업데이트 로직 (`collect_data.py`)
+
+각 데이터셋에 대해:
+1. 기존 CSV 로드 → 마지막 날짜 확인
+2. 기존 데이터 없으면 최초 수집 (TreasurySummary: 1년, BondSummary: 5년, GlobalTreasury: 1년)
+3. 기존 데이터 있으면 `last_date + 1` 부터 수집
+4. `pd.concat` + `drop_duplicates(keep='last')` 로 병합 후 저장
+5. 수집 실패 시 기존 데이터 보존 (덮어쓰기 없음)
 
 ### Output Structure
 
 ```
 data/
-  global_treasury.csv          # 글로벌 국채 (investing.com) — collect_data.py → git push
-  raw/
-    YYYYMMDD/
-      kofia_bond_yield.xlsx    # KOFIA 국채 — Streamlit 버튼으로 서버에서 직접 수집
+  global_treasury.csv   # 글로벌 국채 (investing.com) — collect_data.py → git push
+  treasury_summary.csv  # KOFIA 주요 만기 국채 (KR_nY 형식) — collect_data.py → git push
+  bond_summary.csv      # KOFIA 전종목 최종호가수익률 — collect_data.py → git push
+  tmp/                  # Selenium 임시 다운로드 (자동 정리)
 ```
 
 ### Notes
 
 - `webdriver-manager` auto-downloads ChromeDriver; Chrome must be installed
-- On Selenium error, page source is saved to `data/raw/selenium_error_step.html`
+- On Selenium error, page source is saved to `data/selenium_error_treasury.html` / `selenium_error_bond_A.html` 등
 - `debug_frames.py` runs with a visible browser window (headless line intentionally commented out)
