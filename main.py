@@ -512,12 +512,17 @@ if asset_class == "채권":
                                 "시그널":    sig,
                             }
 
+                        _SIG_WARNING_BG = "background-color: rgba(255, 75, 75, 0.18)"
+                        _SIG_CAUTION_BG = "background-color: rgba(255, 165, 0, 0.18)"
+
+                        def _fmt_signal(val):
+                            if val == "Warning": return "🚨 Warning"
+                            if val == "Caution": return "⚡ Caution"
+                            return val
+
                         if signal_rows:
                             sig_df = pd.DataFrame.from_dict(signal_rows, orient="index")
                             sig_df.index.name = "종목"
-
-                            _SIG_WARNING_BG = "background-color: rgba(255, 75, 75, 0.18)"
-                            _SIG_CAUTION_BG = "background-color: rgba(255, 165, 0, 0.18)"
 
                             def _row_signal_style(row):
                                 sig = row["시그널"]
@@ -525,11 +530,6 @@ if asset_class == "채권":
                                 elif sig == "Caution": bg = _SIG_CAUTION_BG
                                 else: bg = ""
                                 return [bg] * len(row)
-
-                            def _fmt_signal(val):
-                                if val == "Warning": return "🚨 Warning"
-                                if val == "Caution": return "⚡ Caution"
-                                return val
 
                             sig_styled = (
                                 sig_df.style
