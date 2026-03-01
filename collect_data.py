@@ -5,9 +5,8 @@
 수집 실패 시 기존 데이터는 그대로 보존됩니다.
 
 저장 경로:
-  data/global_treasury.csv   — investing.com 글로벌 국채
-  data/treasury_summary.csv  — KOFIA 주요 만기 국채 (KR_nY 형식)
-  data/bond_summary.csv      — KOFIA 전종목 최종호가수익률
+  data/global_treasury.csv   — investing.com 글로벌 국채 (5년치)
+  data/bond_summary.csv      — KOFIA 전종목 최종호가수익률 (5년치)
 
 사용법:
     python collect_data.py
@@ -26,16 +25,15 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent
 sys.path.insert(0, str(_root))
 
-from modules.collector.kofia import TreasurySummary, BondSummary
+from modules.collector.kofia import BondSummary
 from modules.collector.investing import GlobalTreasury
 from modules.calculator.kofia import KofiaCalc
 
 RAW_DIR = _root / "data"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-GLOBAL_TREASURY_CSV  = RAW_DIR / "global_treasury.csv"
-TREASURY_SUMMARY_CSV = RAW_DIR / "treasury_summary.csv"
-BOND_SUMMARY_CSV     = RAW_DIR / "bond_summary.csv"
+GLOBAL_TREASURY_CSV = RAW_DIR / "global_treasury.csv"
+BOND_SUMMARY_CSV    = RAW_DIR / "bond_summary.csv"
 
 # ─── 기준일 ────────────────────────────────────────────────────────────────────
 
@@ -84,38 +82,38 @@ def _merge_save(existing: pd.DataFrame | None, new_df: pd.DataFrame, path: Path)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1. KOFIA TreasurySummary
+# 1. KOFIA BondSummary
 # ══════════════════════════════════════════════════════════════════════════════
 
 print("=" * 60)
-print("1. KOFIA TreasurySummary")
+print("1. KOFIA BondSummary")
 print("=" * 60)
 
-ts_existing = _load_csv(TREASURY_SUMMARY_CSV)
-ts_last     = _last_date(ts_existing)
+bs_existing = _load_csv(BOND_SUMMARY_CSV)
+bs_last     = _last_date(bs_existing)
 
-if ts_last:
-    ts_start_dt = ts_last + timedelta(days=1)
+if bs_last:
+    bs_start_dt = bs_last + timedelta(days=1)
 else:
     try:
-        ts_start_dt = end_date.replace(year=end_date.year - 1)
+        bs_start_dt = end_date.replace(year=end_date.year - 5)
     except ValueError:
-        ts_start_dt = end_date - timedelta(days=365)
+        bs_start_dt = end_date - timedelta(days=365 * 5)
 
-ts_start_str = ts_start_dt.strftime("%Y-%m-%d")
-print(f"  기간: {ts_start_str} ~ {end_str}")
+bs_start_str = bs_start_dt.strftime("%Y-%m-%d")
+print(f"  기간: {bs_start_str} ~ {end_str}")
 print("  " + "-" * 40)
 
-if ts_start_dt > end_date:
+if bs_start_dt > end_date:
     print("  [완료] 이미 최신 데이터")
 else:
-    ts = TreasurySummary()
-    df_raw = ts.collect(start_date=ts_start_str, end_date=end_str)
-    if df_raw is not None:
+    bs = BondSummary()
+    df_bond = bs.collect(start_date=bs_start_str, end_date=end_str)
+    if df_bond is not None:
         try:
-            df_std = KofiaCalc.standardize(df_raw)
-            merged = _merge_save(ts_existing, df_std, TREASURY_SUMMARY_CSV)
-            print(f"  [저장] → {TREASURY_SUMMARY_CSV}  ({len(merged)}행 {len(merged.columns)}열)")
+            df_std = KofiaCalc.standardize_bond(df_bond)
+            merged = _merge_save(bs_existing, df_std, BOND_SUMMARY_CSV)
+            print(f"  [저장] → {BOND_SUMMARY_CSV}  ({len(merged)}행 {len(merged.columns)}열)")
             print(merged.tail(3).to_string())
         except Exception as e:
             print(f"  [표준화 오류] {e}")
@@ -125,43 +123,11 @@ else:
 print()
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. KOFIA BondSummary
+# 2. investing.com GlobalTreasury
 # ══════════════════════════════════════════════════════════════════════════════
 
 print("=" * 60)
-print("2. KOFIA BondSummary")
-print("=" * 60)
-
-try:
-    bs_start_dt = end_date.replace(year=end_date.year - 5)
-except ValueError:
-    bs_start_dt = end_date - timedelta(days=365 * 5)
-
-bs_start_str = bs_start_dt.strftime("%Y-%m-%d")
-print(f"  기간: {bs_start_str} ~ {end_str}")
-print("  " + "-" * 40)
-
-bs = BondSummary()
-df_bond = bs.collect(start_date=bs_start_str, end_date=end_str)
-if df_bond is not None:
-    try:
-        df_std = KofiaCalc.standardize_bond(df_bond)
-        df_std.to_csv(BOND_SUMMARY_CSV)
-        print(f"  [저장] → {BOND_SUMMARY_CSV}  ({len(df_std)}행 {len(df_std.columns)}열)")
-        print(df_std.tail(3).to_string())
-    except Exception as e:
-        print(f"  [표준화 오류] {e}")
-else:
-    print("  [실패] 기존 데이터 유지")
-
-print()
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 3. investing.com GlobalTreasury
-# ══════════════════════════════════════════════════════════════════════════════
-
-print("=" * 60)
-print("3. investing.com GlobalTreasury")
+print("2. investing.com GlobalTreasury")
 print("=" * 60)
 
 gt_existing = _load_csv(GLOBAL_TREASURY_CSV)
@@ -171,9 +137,9 @@ if gt_last:
     gt_start_dt = gt_last + timedelta(days=1)
 else:
     try:
-        gt_start_dt = end_date.replace(year=end_date.year - 1)
+        gt_start_dt = end_date.replace(year=end_date.year - 5)
     except ValueError:
-        gt_start_dt = end_date - timedelta(days=365)
+        gt_start_dt = end_date - timedelta(days=365 * 5)
 
 gt_start_str = gt_start_dt.strftime("%Y-%m-%d")
 print(f"  기간: {gt_start_str} ~ {end_str}")

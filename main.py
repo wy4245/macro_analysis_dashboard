@@ -11,21 +11,9 @@ from datetime import datetime, timedelta, date
 from modules.calculator.global_treasury import TreasuryCalc
 
 
-# ─── 기준일 자동 설정: 전일 ────────────────────────────────────────────────────
-TARGET_DATE = date.today() - timedelta(days=1)
-
-
 # ─── 페이지 기본 설정 ──────────────────────────────────────────────────────────
 st.set_page_config(page_title="MMS", layout="wide")
-st.title("Macro Analysis")
-
-TODAY     = TARGET_DATE
-TODAY_STR = TODAY.strftime("%Y-%m-%d")
-try:
-    START_DATE = TODAY.replace(year=TODAY.year - 1)
-except ValueError:  # 2월 29일인 경우
-    START_DATE = TODAY - timedelta(days=365)
-START_STR = START_DATE.strftime("%Y-%m-%d")
+st.title("MMS(Macro Monitoring System)")
 
 COUNTRIES = ["KR", "US", "DE", "GB", "JP", "CN"]
 TENORS    = [2, 3, 5, 10, 20, 30]
@@ -47,20 +35,6 @@ def _load_global() -> pd.DataFrame | None:
         return None
 
 
-def _load_latest_kofia() -> pd.DataFrame | None:
-    """data/treasury_summary.csv 에서 KOFIA 국채 데이터를 로드합니다."""
-    csv_path = os.path.join("data", "treasury_summary.csv")
-    if not os.path.exists(csv_path):
-        return None
-    try:
-        df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        df.index.name = "Date"
-        return df
-    except Exception as e:
-        print(f"[KOFIA] 파일 읽기 오류: {e}")
-        return None
-
-
 def _load_bond() -> pd.DataFrame | None:
     """data/bond_summary.csv 에서 국내 채권 데이터를 로드합니다."""
     csv_path = os.path.join("data", "bond_summary.csv")
@@ -78,16 +52,34 @@ def _load_bond() -> pd.DataFrame | None:
 # ─── 앱 시작 시 사전 계산 ────────────────────────────────────────────────────
 
 _global_df: pd.DataFrame | None = _load_global()
-_kofia_df:  pd.DataFrame | None = _load_latest_kofia()
 _bond_df:   pd.DataFrame | None = _load_bond()
 
+# bond_summary의 KTB_nY 컬럼을 KR_nY 형식으로 변환하여 글로벌 데이터와 병합
 _merged_df: pd.DataFrame | None = None
-if _global_df is not None and _kofia_df is not None:
-    _merged_df = TreasuryCalc.merge(_global_df, _kofia_df)
+if _global_df is not None and _bond_df is not None:
+    _ktb_to_kr = {f"KTB_{t}Y": f"KR_{t}Y" for t in TENORS if f"KTB_{t}Y" in _bond_df.columns}
+    _kr_df = _bond_df[list(_ktb_to_kr.keys())].rename(columns=_ktb_to_kr)
+    _merged_df = TreasuryCalc.merge(_global_df, _kr_df)
 elif _global_df is not None:
     _merged_df = _global_df
-elif _kofia_df is not None:
-    _merged_df = _kofia_df
+
+
+# ─── 기준일: 실제 데이터의 마지막 날짜 ──────────────────────────────────────────
+
+_candidates = []
+if _merged_df is not None and not _merged_df.empty:
+    _candidates.append(_merged_df.index.max().date())
+if _bond_df is not None and not _bond_df.empty:
+    _candidates.append(_bond_df.index.max().date())
+TARGET_DATE = max(_candidates) if _candidates else date.today() - timedelta(days=1)
+
+TODAY     = TARGET_DATE
+TODAY_STR = TODAY.strftime("%Y-%m-%d")
+try:
+    START_DATE = TODAY.replace(year=TODAY.year - 1)
+except ValueError:  # 2월 29일인 경우
+    START_DATE = TODAY - timedelta(days=365)
+START_STR = START_DATE.strftime("%Y-%m-%d")
 
 
 # ─── 채권 종목 한글 레이블 ────────────────────────────────────────────────────
