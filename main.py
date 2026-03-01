@@ -182,31 +182,55 @@ domestic_sub = "채권 금리"
 raw_sub      = "글로벌 국채 금리"
 
 with st.sidebar:
+    # ── 계층 들여쓰기 CSS ─────────────────────────────────────────────────────
+    # nav-lN 마커 div 이후에 등장하는 stRadio 형제를 레벨별로 들여씀.
+    # 같은 specificity에서 나중에 선언된 규칙이 이기므로 깊은 레벨일수록
+    # 더 큰 padding-left가 적용됨(cascade 이용).
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"]
+        [data-testid="stVerticalBlock"]
+        > div:has(.nav-l2) ~ div [data-testid="stRadio"] {
+            padding-left: 1.1rem;
+        }
+    section[data-testid="stSidebar"]
+        [data-testid="stVerticalBlock"]
+        > div:has(.nav-l3) ~ div [data-testid="stRadio"] {
+            padding-left: 2.2rem;
+        }
+    section[data-testid="stSidebar"]
+        [data-testid="stVerticalBlock"]
+        > div:has(.nav-l4) ~ div [data-testid="stRadio"] {
+            padding-left: 3.3rem;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
     asset_class = st.radio("", ["채권", "주식"], label_visibility="collapsed")
 
     if asset_class == "채권":
-        st.divider()
+        st.markdown('<div class="nav-l2"></div>', unsafe_allow_html=True)
         bond_view = st.radio(
             "", ["Analysis", "Raw Data"],
             key="bond_view", label_visibility="collapsed",
         )
 
         if bond_view == "Analysis":
-            st.divider()
+            st.markdown('<div class="nav-l3"></div>', unsafe_allow_html=True)
             analysis_sub = st.radio(
                 "", ["글로벌 국채 금리", "국내 채권 금리"],
                 key="analysis_sub", label_visibility="collapsed",
             )
 
             if analysis_sub == "국내 채권 금리":
-                st.divider()
+                st.markdown('<div class="nav-l4"></div>', unsafe_allow_html=True)
                 domestic_sub = st.radio(
                     "", ["채권 금리", "장외거래 대표수익률"],
                     key="domestic_sub", label_visibility="collapsed",
                 )
 
         elif bond_view == "Raw Data":
-            st.divider()
+            st.markdown('<div class="nav-l3"></div>', unsafe_allow_html=True)
             raw_sub = st.radio(
                 "", ["글로벌 국채 금리", "국내 채권 금리", "장외 거래 대표수익률"],
                 key="raw_sub", label_visibility="collapsed",
@@ -435,6 +459,98 @@ if asset_class == "채권":
                         today_bond = TreasuryCalc.get_ref_value(_bond_df, TODAY)
                         today_otc  = TreasuryCalc.get_ref_value(_otc_df,  TODAY)
 
+                        # ── 시그널 계산 (5Y 통계 기반 Z-score) ────────────────
+                        _bond_al, _otc_al = _bond_df[common_cols].align(
+                            _otc_df[common_cols], join="inner"
+                        )
+                        spread_ts = (_bond_al - _otc_al) * 100  # bp 시계열
+                        mean_5y   = spread_ts.mean()
+                        std_5y    = spread_ts.std()
+
+                        _avail_idx = spread_ts.index[spread_ts.index <= pd.Timestamp(TODAY)]
+                        if len(_avail_idx) > 0:
+                            today_spread_row = spread_ts.loc[_avail_idx[-1]]
+                        else:
+                            today_spread_row = pd.Series(float("nan"), index=common_cols)
+
+                        z_scores = (today_spread_row - mean_5y) / std_5y
+
+                        def _get_signal(z) -> str:
+                            if pd.isna(z):        return "Normal"
+                            if abs(z) >= 2.0:     return "Warning"
+                            if abs(z) >= 1.5:     return "Caution"
+                            return "Normal"
+
+                        signal_map = {col: _get_signal(z_scores[col]) for col in common_cols}
+
+                        n_warning = sum(1 for s in signal_map.values() if s == "Warning")
+                        n_caution = sum(1 for s in signal_map.values() if s == "Caution")
+                        n_normal  = len(common_cols) - n_warning - n_caution
+
+                        # ── 요약 배너 ──────────────────────────────────────────
+                        st.subheader("스프레드 이상 시그널")
+                        st.caption("5Y 전체 기간 평균·표준편차 기준  ·  |Z| ≥ 1.5σ: Caution  ·  |Z| ≥ 2.0σ: Warning")
+
+                        col_w, col_c, col_n = st.columns(3)
+                        col_w.metric("🚨 Warning", f"{n_warning}종목")
+                        col_c.metric("⚡ Caution", f"{n_caution}종목")
+                        col_n.metric("✅ 정상",    f"{n_normal}종목")
+
+                        # ── 시그널 종목 상세 테이블 ────────────────────────────
+                        signal_rows: dict = {}
+                        for col in common_cols:
+                            sig = signal_map[col]
+                            if sig == "Normal":
+                                continue
+                            label = BOND_LABELS.get(col, col)
+                            z     = z_scores[col]
+                            signal_rows[label] = {
+                                "현재(bp)":  today_spread_row[col] if pd.notna(today_spread_row[col]) else float("nan"),
+                                "5Y평균(bp)": mean_5y[col],
+                                "5Y표준편차(bp)": std_5y[col],
+                                "Z-score":   z,
+                                "시그널":    sig,
+                            }
+
+                        if signal_rows:
+                            sig_df = pd.DataFrame.from_dict(signal_rows, orient="index")
+                            sig_df.index.name = "종목"
+
+                            _SIG_WARNING_BG = "background-color: rgba(255, 75, 75, 0.18)"
+                            _SIG_CAUTION_BG = "background-color: rgba(255, 165, 0, 0.18)"
+
+                            def _row_signal_style(row):
+                                sig = row["시그널"]
+                                if sig == "Warning": bg = _SIG_WARNING_BG
+                                elif sig == "Caution": bg = _SIG_CAUTION_BG
+                                else: bg = ""
+                                return [bg] * len(row)
+
+                            def _fmt_signal(val):
+                                if val == "Warning": return "🚨 Warning"
+                                if val == "Caution": return "⚡ Caution"
+                                return val
+
+                            sig_styled = (
+                                sig_df.style
+                                .apply(_row_signal_style, axis=1)
+                                .format({
+                                    "현재(bp)":       "{:+.1f}",
+                                    "5Y평균(bp)":     "{:+.1f}",
+                                    "5Y표준편차(bp)": "{:.1f}",
+                                    "Z-score":        "{:+.2f}",
+                                }, na_rep="-")
+                                .format({"시그널": _fmt_signal})
+                                .set_properties(**{"text-align": "center"})
+                            )
+                            st.dataframe(sig_styled, use_container_width=True)
+                        else:
+                            st.success("현재 모든 종목의 스프레드가 정상 범위 내에 있습니다.")
+
+                        st.divider()
+
+                        # ── 전체 스프레드 비교 테이블 ──────────────────────────
+                        st.subheader("최종호가 vs. 장외거래 상세")
                         rows: dict = {}
                         for col in common_cols:
                             label    = BOND_LABELS.get(col, col)
@@ -445,17 +561,28 @@ if asset_class == "채권":
                                 "최종호가(%)":   bond_val,
                                 "장외거래(%)":   otc_val,
                                 "스프레드(bp)": spread,
+                                "시그널":       signal_map[col],
                             }
 
                         otc_cmp_df = pd.DataFrame.from_dict(rows, orient="index")
                         otc_cmp_df.index.name = "종목"
+
+                        def _row_signal_style_full(row):
+                            sig = row["시그널"]
+                            if sig == "Warning": bg = _SIG_WARNING_BG
+                            elif sig == "Caution": bg = _SIG_CAUTION_BG
+                            else: bg = ""
+                            return [bg] * len(row)
+
                         otc_cmp_styled = (
                             otc_cmp_df.style
+                            .apply(_row_signal_style_full, axis=1)
                             .format({
                                 "최종호가(%)":  "{:.3f}",
                                 "장외거래(%)":  "{:.3f}",
                                 "스프레드(bp)": "{:.1f}",
                             }, na_rep="-")
+                            .format({"시그널": _fmt_signal})
                             .map(_color_bp, subset=["스프레드(bp)"])
                             .set_properties(**{"text-align": "center"})
                         )
