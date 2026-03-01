@@ -114,6 +114,19 @@ BOND_LABELS: dict[str, str] = {
 KTB_TENORS = [1, 2, 3, 5, 10, 20, 30, 50]
 
 
+# ─── 공통 헬퍼 ────────────────────────────────────────────────────────────────
+
+def _color_bp(val):
+    if pd.isna(val):
+        return ""
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "color: #ff4b4b"
+        if val < 0:
+            return "color: #0068c9"
+    return ""
+
+
 def _build_bond_summary(df: pd.DataFrame, target_date) -> pd.DataFrame:
     """각 채권 시리즈의 현재 금리 + 변화량(bp) 요약 테이블."""
     today = pd.Timestamp(target_date)
@@ -140,8 +153,6 @@ def _build_bond_summary(df: pd.DataFrame, target_date) -> pd.DataFrame:
     return result
 
 
-# ─── 헬퍼: 특정 날짜의 금리 커브 시리즈 추출 ─────────────────────────────────
-
 def _yield_curve_at(df: pd.DataFrame, country: str, ref_date) -> pd.Series:
     """ref_date 이하 가장 가까운 날짜의 해당 국가 금리 커브를 반환합니다."""
     cols       = [f"{country}_{t}Y" for t in TENORS]
@@ -162,10 +173,45 @@ def _yield_curve_at(df: pd.DataFrame, country: str, ref_date) -> pd.Series:
     return result
 
 
-# ─── 사이드바: 자산군 선택 ────────────────────────────────────────────────────
+# ─── 사이드바 네비게이션 ────────────────────────────────────────────────────
+
+# 기본값 (조건부 위젯이 렌더링되지 않을 때 사용)
+bond_view    = "Analysis"
+analysis_sub = "글로벌 국채 금리"
+domestic_sub = "채권 금리"
+raw_sub      = "글로벌 국채 금리"
 
 with st.sidebar:
-    asset_class = st.radio("자산군", ["채권", "주식"])
+    asset_class = st.radio("", ["채권", "주식"], label_visibility="collapsed")
+
+    if asset_class == "채권":
+        st.divider()
+        bond_view = st.radio(
+            "", ["Analysis", "Raw Data"],
+            key="bond_view", label_visibility="collapsed",
+        )
+
+        if bond_view == "Analysis":
+            st.divider()
+            analysis_sub = st.radio(
+                "", ["글로벌 국채 금리", "국내 채권 금리"],
+                key="analysis_sub", label_visibility="collapsed",
+            )
+
+            if analysis_sub == "국내 채권 금리":
+                st.divider()
+                domestic_sub = st.radio(
+                    "", ["채권 금리", "장외거래 대표수익률"],
+                    key="domestic_sub", label_visibility="collapsed",
+                )
+
+        elif bond_view == "Raw Data":
+            st.divider()
+            raw_sub = st.radio(
+                "", ["글로벌 국채 금리", "국내 채권 금리", "장외 거래 대표수익률"],
+                key="raw_sub", label_visibility="collapsed",
+            )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 채권
@@ -173,28 +219,11 @@ with st.sidebar:
 
 if asset_class == "채권":
 
-    tab_analysis, tab_rawdata = st.tabs(["Analysis", "Raw Data"])
-
-    # ── 공통 컬러 함수 ────────────────────────────────────────────────────────
-
-    def _color_bp(val):
-        if pd.isna(val):
-            return ""
-        if isinstance(val, (int, float)):
-            if val > 0:
-                return "color: #ff4b4b"
-            if val < 0:
-                return "color: #0068c9"
-        return ""
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # TAB 1: Analysis
-    # ══════════════════════════════════════════════════════════════════════════
-    with tab_analysis:
-        subtab_global, subtab_bond = st.tabs(["글로벌 국채 금리", "국내 채권 금리"])
+    # ── Analysis ─────────────────────────────────────────────────────────────
+    if bond_view == "Analysis":
 
         # ── 글로벌 국채 금리 ─────────────────────────────────────────────────
-        with subtab_global:
+        if analysis_sub == "글로벌 국채 금리":
             st.caption(
                 f"Source: investing.com + KOFIA  ·  기준일: {TODAY_STR}  ·  "
                 "주말·공휴일은 직전 거래일 값으로 채워짐"
@@ -291,11 +320,10 @@ if asset_class == "채권":
                 st.dataframe(curve_styled, use_container_width=True)
 
         # ── 국내 채권 금리 ───────────────────────────────────────────────────
-        with subtab_bond:
-            subtab_yield, subtab_otc = st.tabs(["채권 금리", "vs. 장외 거래 대표수익률"])
+        elif analysis_sub == "국내 채권 금리":
 
-            # ── 채권 금리 탭 ─────────────────────────────────────────────────
-            with subtab_yield:
+            # ── 채권 금리 ────────────────────────────────────────────────────
+            if domestic_sub == "채권 금리":
                 st.caption(
                     f"Source: KOFIA  ·  기준일: {TODAY_STR}  ·  "
                     "주말·공휴일은 직전 거래일 값으로 채워짐"
@@ -387,8 +415,8 @@ if asset_class == "채권":
                         )
                         st.dataframe(ktb_styled, use_container_width=True)
 
-            # ── vs. 장외 거래 대표수익률 탭 ─────────────────────────────────
-            with subtab_otc:
+            # ── 장외거래 대표수익률 ──────────────────────────────────────────
+            elif domestic_sub == "장외거래 대표수익률":
                 st.caption(
                     f"Source: KOFIA  ·  기준일: {TODAY_STR}  ·  "
                     "최종호가수익률 vs. 장외거래대표수익률  ·  스프레드 = 최종호가 − 장외거래"
@@ -433,14 +461,11 @@ if asset_class == "채권":
                         )
                         st.dataframe(otc_cmp_styled, use_container_width=True)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # TAB 2: Raw Data
-    # ══════════════════════════════════════════════════════════════════════════
-    with tab_rawdata:
-        raw_global, raw_bond, raw_otc = st.tabs(["글로벌 국채 금리", "국내 채권 금리", "장외 거래 대표수익률"])
+    # ── Raw Data ─────────────────────────────────────────────────────────────
+    elif bond_view == "Raw Data":
 
         # ── 글로벌 국채 금리 raw ─────────────────────────────────────────────
-        with raw_global:
+        if raw_sub == "글로벌 국채 금리":
             st.caption(
                 "글로벌 국채 금리 + KOFIA KR 금리 병합  ·  "
                 "주말·공휴일은 직전 거래일 값으로 채워짐 (forward fill)"
@@ -472,7 +497,7 @@ if asset_class == "채권":
                 )
 
         # ── 국내 채권 금리 raw ───────────────────────────────────────────────
-        with raw_bond:
+        elif raw_sub == "국내 채권 금리":
             st.caption(
                 "KOFIA 전종목 최종호가수익률  ·  "
                 "주말·공휴일은 직전 거래일 값으로 채워짐 (forward fill)"
@@ -513,7 +538,7 @@ if asset_class == "채권":
                 )
 
         # ── 장외 거래 대표수익률 raw ─────────────────────────────────────────
-        with raw_otc:
+        elif raw_sub == "장외 거래 대표수익률":
             st.caption(
                 "KOFIA 장외거래대표수익률  ·  "
                 "주말·공휴일은 직전 거래일 값으로 채워짐 (forward fill)"
@@ -552,6 +577,7 @@ if asset_class == "채권":
                     df_otc_display.style.format("{:.3f}", na_rep="-").set_properties(**{"text-align": "center"}),
                     use_container_width=True,
                 )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 주식 (준비 중)
