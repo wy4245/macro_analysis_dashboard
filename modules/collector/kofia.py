@@ -102,12 +102,12 @@ def _set_date_range(driver, wait, start_str: str, end_str: str):
     time.sleep(1)
 
 
-def _wait_for_download(save_dir: str, cwd: str, timeout: int = 30) -> str | None:
+def _wait_for_download(save_dir: str, cwd: str, timeout: int = 30, filename: str = _KOFIA_DL_FILE) -> str | None:
     for _ in range(timeout):
         for p in [
-            os.path.join(save_dir, _KOFIA_DL_FILE),
-            os.path.join(cwd, _KOFIA_DL_FILE),
-            os.path.join(cwd, "data", _KOFIA_DL_FILE),
+            os.path.join(save_dir, filename),
+            os.path.join(cwd, filename),
+            os.path.join(cwd, "data", filename),
         ]:
             if os.path.exists(p):
                 return p
@@ -406,6 +406,205 @@ class BondSummary:
 
         # 동일 컬럼명이 여러 배치에 중복된 경우(KOFIA XLS가 전종목 헤더를 포함할 때)
         # → 각 컬럼별 첫 번째 non-NaN 값으로 결합
+        if merged_idx.columns.duplicated().any():
+            unique_cols = list(dict.fromkeys(merged_idx.columns))
+            deduped: dict[str, pd.Series] = {}
+            for col in unique_cols:
+                sub = merged_idx.loc[:, merged_idx.columns == col]
+                if sub.shape[1] > 1:
+                    combined = sub.iloc[:, 0]
+                    for i in range(1, sub.shape[1]):
+                        combined = combined.combine_first(sub.iloc[:, i])
+                    deduped[col] = combined
+                else:
+                    deduped[col] = sub.iloc[:, 0]
+            merged_idx = pd.DataFrame(deduped, index=merged_idx.index)
+
+        merged = merged_idx.reset_index()
+        merged = merged.sort_values("Date", ascending=True).reset_index(drop=True)
+        print(f"  [완료] 병합 완료  ({len(merged)}행, {len(merged.columns)}열)")
+        return merged
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Class 3: BondSummary_OTC
+# ══════════════════════════════════════════════════════════════════════════════
+
+_OTC_DL_FILE = "장외거래 대표수익률(기간별).xls"
+
+_OTC_BATCHES = [
+    {
+        "name": "A",
+        "ids": [
+            "chkAnnItm_input_0",   # 국고채권(2년)
+            "chkAnnItm_input_1",   # 국고채권(3년)
+            "chkAnnItm_input_2",   # 국고채권(5년)
+            "chkAnnItm_input_3",   # 국고채권(10년)
+            "chkAnnItm_input_4",   # 국고채권(20년)
+            "chkAnnItm_input_5",   # 국고채권(30년)
+        ],
+    },
+    {
+        "name": "B",
+        "ids": [
+            "chkAnnItm_input_6",   # 국고채권(50년)
+            "chkAnnItm_input_7",   # 국민주택1종(5년)
+            "chkAnnItm_input_10",  # 한국전력(3년)
+            "chkAnnItm_input_11",  # 통안증권(91일)
+            "chkAnnItm_input_12",  # 통안증권(1년)
+            "chkAnnItm_input_13",  # 통안증권(2년)
+        ],
+    },
+    {
+        "name": "C",
+        "ids": [
+            "chkAnnItm_input_15",  # 산금채(1년)
+            "chkAnnItm_input_16",  # 무보증AA-(3년)
+        ],
+    },
+]
+
+# OTC 페이지 기본 체크 항목 (신규 세션 진입 시 항상 체크되어 있는 6개)
+_OTC_INIT_UNCHECK = [
+    "chkAnnItm_input_1",   # 국고채권(3년)
+    "chkAnnItm_input_2",   # 국고채권(5년)
+    "chkAnnItm_input_3",   # 국고채권(10년)
+    "chkAnnItm_input_12",  # 통안증권(1년)
+    "chkAnnItm_input_13",  # 통안증권(2년)
+    "chkAnnItm_input_16",  # 무보증AA-(3년)
+]
+
+
+def _navigate_to_otc_page(driver, wait):
+    """OTC(장외거래대표수익률) 페이지 진입."""
+    driver.get(_KOFIA_URL)
+    time.sleep(5)
+
+    driver.switch_to.frame("fraAMAKMain")
+    _safe_click(driver, wait, By.ID, "genLv1_0_imgLv1")
+    time.sleep(1)
+    _safe_click(driver, wait, By.ID, "genLv1_0_genLv2_1_txtLv2")
+    time.sleep(3)
+
+    wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "maincontent")))
+    _safe_click(driver, wait, By.ID, "tabContents1_tab_tabs2")
+    time.sleep(3)
+
+    wait.until(EC.frame_to_be_available_and_switch_to_it((By.ID, "tabContents1_contents_tabs2_body")))
+
+
+class BondSummary_OTC:
+    """
+    KOFIA 장외거래대표수익률 수집.
+
+    14개 시리즈를 6·6·2개씩 3배치로 나눠 수집 후 Date 기준 merge.
+    배치: A(국고채 2~30년) / B(국고채50년·국민주택·한전·통안) / C(산금채·무보증AA-)
+    반환: Date 컬럼 + 시리즈 컬럼들의 DataFrame (저장은 collect_data.py 에서 처리)
+
+    ⚠️  최초 실행 전 _navigate_to_otc_page() 의 메뉴 ID를 반드시 확인.
+    """
+
+    def __init__(self, download_dir: str | None = None):
+        if download_dir is None:
+            self.download_dir = os.path.abspath(os.path.join(os.getcwd(), "data"))
+        else:
+            self.download_dir = os.path.abspath(download_dir)
+        self._tmp_dir = os.path.join(self.download_dir, "tmp")
+        os.makedirs(self._tmp_dir, exist_ok=True)
+
+    def collect(self, start_date: str, end_date: str, headless: bool = True) -> pd.DataFrame | None:
+        """
+        배치(A/B/C)마다 독립 Chrome 세션으로 수집 후 병합하여 반환합니다.
+
+        Args:
+            start_date: "YYYY-MM-DD"
+            end_date  : "YYYY-MM-DD"
+            headless  : True이면 브라우저 창 없이 실행
+
+        Returns:
+            Date 컬럼을 포함한 병합 DataFrame. 실패 시 None.
+        """
+        print(f"  기간: {start_date} ~ {end_date}")
+
+        chromedriver_path = ChromeDriverManager().install()
+        batch_files: list[tuple[str, str]] = []
+
+        for batch in _OTC_BATCHES:
+            bname = batch["name"]
+            bids  = batch["ids"]
+            print(f"  [배치 {bname}] 수집 시작...")
+
+            driver = webdriver.Chrome(
+                service=Service(chromedriver_path),
+                options=_build_options(headless, self._tmp_dir),
+            )
+            wait = WebDriverWait(driver, 30)
+
+            try:
+                _navigate_to_otc_page(driver, wait)
+                _set_date_range(driver, wait, start_date, end_date)
+
+                for cid in _OTC_INIT_UNCHECK:
+                    _force_click_checkbox(driver, cid)
+                time.sleep(0.3)
+
+                for cid in bids:
+                    _force_click_checkbox(driver, cid)
+                time.sleep(0.5)
+
+                _safe_click(driver, wait, By.ID, "image8")
+                time.sleep(5)
+                _safe_click(driver, wait, By.ID, "imgExcel")
+                time.sleep(5)
+
+                dl = _wait_for_download(self._tmp_dir, os.getcwd(), filename=_OTC_DL_FILE)
+                if dl:
+                    dest = os.path.join(self._tmp_dir, f"otc_summary_{bname}.xls")
+                    if os.path.exists(dest):
+                        os.remove(dest)
+                    os.rename(dl, dest)
+                    batch_files.append((bname, dest))
+                    print(f"  [배치 {bname}] 완료 → {os.path.basename(dest)}")
+                else:
+                    print(f"  [배치 {bname}] 다운로드 실패 — 건너뜀")
+
+            except Exception as e:
+                print(f"  [배치 {bname}] Selenium 오류: {e}")
+                try:
+                    with open(
+                        os.path.join(self.download_dir, f"selenium_error_otc_{bname}.html"),
+                        "w", encoding="utf-8",
+                    ) as f:
+                        f.write(driver.page_source)
+                except Exception:
+                    pass
+            finally:
+                driver.quit()
+
+        if not batch_files:
+            print("  [실패] 다운로드된 파일 없음")
+            return None
+
+        dfs: list[pd.DataFrame] = []
+        for bname, path in batch_files:
+            df = _parse_kofia_xls(path)
+            if df is not None:
+                dfs.append(df)
+                print(f"  [배치 {bname}] {len(df)}행, {len(df.columns) - 1}열 파싱 완료")
+
+        for _, path in batch_files:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        if not dfs:
+            print("  [실패] 파싱 가능한 파일 없음")
+            return None
+
+        dfs_indexed = [df.set_index("Date") for df in dfs]
+        merged_idx = pd.concat(dfs_indexed, axis=1)
+
         if merged_idx.columns.duplicated().any():
             unique_cols = list(dict.fromkeys(merged_idx.columns))
             deduped: dict[str, pd.Series] = {}

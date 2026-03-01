@@ -25,7 +25,7 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent
 sys.path.insert(0, str(_root))
 
-from modules.collector.kofia import BondSummary
+from modules.collector.kofia import BondSummary, BondSummary_OTC
 from modules.collector.investing import GlobalTreasury
 from modules.calculator.kofia import KofiaCalc
 
@@ -34,6 +34,7 @@ RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 GLOBAL_TREASURY_CSV = RAW_DIR / "global_treasury.csv"
 BOND_SUMMARY_CSV    = RAW_DIR / "bond_summary.csv"
+OTC_SUMMARY_CSV     = RAW_DIR / "otc_summary.csv"
 
 # ─── 기준일 ────────────────────────────────────────────────────────────────────
 
@@ -154,6 +155,47 @@ else:
         merged = _merge_save(gt_existing, df_g, GLOBAL_TREASURY_CSV)
         print(f"  [저장] → {GLOBAL_TREASURY_CSV}  ({len(merged)}행 {len(merged.columns)}열)")
         print(merged.tail(3).to_string())
+    else:
+        print("  [실패] 기존 데이터 유지")
+
+print()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. KOFIA 장외거래대표수익률
+# ══════════════════════════════════════════════════════════════════════════════
+
+print("=" * 60)
+print("3. KOFIA 장외거래대표수익률")
+print("=" * 60)
+
+otc_existing = _load_csv(OTC_SUMMARY_CSV)
+otc_last     = _last_date(otc_existing)
+
+if otc_last:
+    otc_start_dt = otc_last + timedelta(days=1)
+else:
+    try:
+        otc_start_dt = end_date.replace(year=end_date.year - 5)
+    except ValueError:
+        otc_start_dt = end_date - timedelta(days=365 * 5)
+
+otc_start_str = otc_start_dt.strftime("%Y-%m-%d")
+print(f"  기간: {otc_start_str} ~ {end_str}")
+print("  " + "-" * 40)
+
+if otc_start_dt > end_date:
+    print("  [완료] 이미 최신 데이터")
+else:
+    otc = BondSummary_OTC()
+    df_otc = otc.collect(start_date=otc_start_str, end_date=end_str)
+    if df_otc is not None:
+        try:
+            df_std = KofiaCalc.standardize_otc(df_otc)
+            merged = _merge_save(otc_existing, df_std, OTC_SUMMARY_CSV)
+            print(f"  [저장] → {OTC_SUMMARY_CSV}  ({len(merged)}행 {len(merged.columns)}열)")
+            print(merged.tail(3).to_string())
+        except Exception as e:
+            print(f"  [표준화 오류] {e}")
     else:
         print("  [실패] 기존 데이터 유지")
 

@@ -109,16 +109,16 @@ class KofiaCalc:
                 return "MSB_91D"
             m = re.search(r"\((\d+)년\)", s)
             return f"MSB_{m.group(1)}Y" if m else None
-        # 한전채(n년)
-        if "한전" in s:
+        # 한전채(n년) / 한국전력(n년) — 최종호가수익률: 한전채, OTC: 한국전력
+        if "한전" in s or "한국전력" in s:
             m = re.search(r"\((\d+)년\)", s)
             return f"KEPCO_{m.group(1)}Y" if m else None
         # 산금채(n년)
         if "산금" in s:
             m = re.search(r"\((\d+)년\)", s)
             return f"KDB_{m.group(1)}Y" if m else None
-        # 회사채 AA- / BBB-
-        if "회사채" in s:
+        # 회사채 AA- / BBB- (최종호가수익률: 회사채, OTC: 무보증)
+        if "회사채" in s or "무보증" in s:
             if "AA" in s:
                 return "CORP_AA_3Y"
             if "BBB" in s:
@@ -199,3 +199,13 @@ class KofiaCalc:
         df = df[sorted_cols]
 
         return KofiaCalc.fill_calendar(df)
+
+    @staticmethod
+    def standardize_otc(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        BondSummary_OTC.collect() 결과를 표준 형식으로 변환.
+
+        OTC 페이지 특유의 컬럼명(한국전력, 무보증AA- 등)을 포함해
+        standardize_bond()와 동일한 코드 체계로 변환합니다.
+        """
+        return KofiaCalc.standardize_bond(df)
